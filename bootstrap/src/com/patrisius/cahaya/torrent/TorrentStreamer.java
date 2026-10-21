@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public class TorrentStreamer {
     private static final String TAG = "TorrentStreamer";
-    private static final long READY_BYTES = 16L * 1024 * 1024; // start playback after this much (mpv needs header + seek table)
+    private static final long READY_BYTES = 8L * 1024 * 1024; // start playback after this much
     private static final int META_TIMEOUT_S = 120;
 
     public interface Callback {
@@ -237,8 +237,9 @@ public class TorrentStreamer {
                     // Verify the file header is valid before launching the player.
                     // If the first bytes aren't the MKV/MP4 magic, the data isn't
                     // actually on disk yet (flush issue) — wait for it.
-                    // Also wait for the tail pieces (MKV seek table) so mpv can parse.
-                    if (hasValidHeader(targetFile) && hasTailPieces()) {
+                    // Note: we don't wait for tail pieces (MKV seek table) anymore;
+                    // mpv can play without it, seeking just won't work until downloaded.
+                    if (hasValidHeader(targetFile)) {
                         ready = true;
                         cb.onReady(httpUrl, fileName);
                     }
