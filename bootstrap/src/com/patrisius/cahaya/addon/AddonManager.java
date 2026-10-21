@@ -30,6 +30,19 @@ public class AddonManager {
     public static final String DEFAULT_ADDON = "https://v3-cinemeta.strem.io";
     /** Default subtitle addon installed on first run (keyless community subs). */
     public static final String SUBTITLES_DEFAULT = "https://subsource.strem.top";
+    /** More defaults: streams + extra subtitles. Empty results are tolerated. */
+    public static final String[] MORE_DEFAULTS = {
+            "https://mediafusion.elfhosted.com", // streams (needs config for most sources)
+            "https://subdl.strem.top",           // subtitles
+    };
+    /**
+     * Curated suggestions shown in the Addons screen (not auto-installed).
+     * Each entry: {name, manifest base URL, note}.
+     */
+    public static final String[][] SUGGESTED_ADDONS = {
+            {"OpenSubtitles v3", "https://opensubtitles-v3.strem.io",
+                    "Needs a free API key from opensubtitles.com"},
+    };
 
     public interface Callback<T> {
         void onResult(T result);
@@ -54,17 +67,52 @@ public class AddonManager {
             try {
                 Set<String> urls = new HashSet<>(addonUrls());
                 boolean fresh = false;
-                for (String def : new String[]{DEFAULT_ADDON, SUBTITLES_DEFAULT}) {
+                List<String> defs = new ArrayList<>();
+                defs.add(DEFAULT_ADDON);
+                defs.add(SUBTITLES_DEFAULT);
+                for (String m : MORE_DEFAULTS) {
+                    defs.add(m);
+                }
+                for (String def : defs) {
                     if (!urls.contains(def)) {
-                        fetchText(def + "/manifest.json"); // throws if dead
-                        urls.add(def);
-                        fresh = true;
+                        try {
+                            fetchText(def + "/manifest.json"); // throws if dead
+                            urls.add(def);
+                            fresh = true;
+                        } catch (Exception skipped) {
+                            // a dead default must not block the others
+                        }
                     }
                 }
                 prefs.edit().putStringSet("urls", urls).apply();
                 post(cb, fresh, null);
             } catch (Exception e) {
                 post(cb, false, e);
+            }
+        });
+    }
+
+    /** Installs one addon from its base URL (validates manifest.json first). */
+    public void installAddon(final String baseUrl, final Callback<String> cb) {
+        final String base = baseUrl.replaceAll("/+$", "");
+        fetchTextAsync(base + "/manifest.json", new Callback<String>() {
+            @Override
+            public void onResult(String body) {
+                try {
+                    JSONObject m = new JSONObject(body);
+                    String name = m.optString("name", base);
+                    Set<String> urls = new HashSet<>(addonUrls());
+                    urls.add(base);
+                    prefs.edit().putStringSet("urls", urls).apply();
+                    post(cb, name, null);
+                } catch (Exception e) {
+                    post(cb, null, e);
+                }
+            }
+
+            @Override
+            public void onError(Exception e) {
+                post(cb, null, e);
             }
         });
     }

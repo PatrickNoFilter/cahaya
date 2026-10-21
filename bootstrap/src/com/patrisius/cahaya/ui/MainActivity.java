@@ -28,6 +28,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.patrisius.cahaya.CahayaApp;
+import com.patrisius.cahaya.R;
 import com.patrisius.cahaya.addon.AddonManager;
 import com.patrisius.cahaya.addon.CatalogItem;
 import com.patrisius.cahaya.plugin.Plugin;
@@ -60,11 +61,18 @@ public class MainActivity extends Activity {
 
     private LinearLayout sidebar;
     private FrameLayout content;
-    private TextView brand;
+    private ImageView brandLogo;
+    private TextView infoBar;
     private final List<LinearLayout> menuRows = new ArrayList<>();
     private final List<TextView> menuLabels = new ArrayList<>();
     private int selected = 0;
     private boolean sidebarExpanded = true;
+
+    private void updateInfo(String text) {
+        if (infoBar != null) {
+            infoBar.setText(text);
+        }
+    }
 
     private LinearLayout homeRows;
     private TextView homeStatus;
@@ -100,14 +108,14 @@ public class MainActivity extends Activity {
         root.addView(sidebar, new LinearLayout.LayoutParams(
                 sideW, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        TextView brand = new TextView(this);
-        this.brand = brand;
-        brand.setText("Cahaya");
-        brand.setTextSize(26);
-        brand.setSingleLine(true);
-        brand.setTextColor(Color.parseColor("#4FC3F7"));
-        brand.setPadding(dp(20), dp(28), dp(20), dp(20));
-        sidebar.addView(brand);
+        brandLogo = new ImageView(this);
+        brandLogo.setImageResource(R.drawable.app_banner);
+        brandLogo.setAdjustViewBounds(true);
+        brandLogo.setScaleType(ImageView.ScaleType.FIT_START);
+        brandLogo.setPadding(dp(16), dp(20), dp(16), dp(12));
+        sidebar.addView(brandLogo, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         for (int i = 0; i < MENU.length; i++) {
             final int idx = i;
@@ -139,10 +147,25 @@ public class MainActivity extends Activity {
             menuLabels.add(label);
         }
 
-        content = new FrameLayout(this);
-        content.setPadding(dp(28), dp(28), dp(28), dp(28));
-        root.addView(content, new LinearLayout.LayoutParams(
+        LinearLayout contentCol = new LinearLayout(this);
+        contentCol.setOrientation(LinearLayout.VERTICAL);
+        root.addView(contentCol, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+
+        infoBar = new TextView(this);
+        infoBar.setTextSize(20);
+        infoBar.setSingleLine(true);
+        infoBar.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        infoBar.setTextColor(Color.WHITE);
+        infoBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        infoBar.setPadding(dp(28), 0, dp(28), 0);
+        contentCol.addView(infoBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(64)));
+
+        content = new FrameLayout(this);
+        content.setPadding(dp(28), dp(8), dp(28), dp(28));
+        contentCol.addView(content, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
         root.getViewTreeObserver().addOnGlobalFocusChangeListener(
@@ -150,7 +173,11 @@ public class MainActivity extends Activity {
                     if (newFocus == null) {
                         return;
                     }
-                    setSidebarExpanded(isUnder(newFocus, sidebar));
+                    boolean inSidebar = isUnder(newFocus, sidebar);
+                    setSidebarExpanded(inSidebar);
+                    if (inSidebar) {
+                        updateInfo(MENU[selected]);
+                    }
                 });
 
         mgr = ((CahayaApp) getApplication()).addons();
@@ -215,9 +242,17 @@ public class MainActivity extends Activity {
             sidebar.setLayoutParams(lp);
         });
         anim.start();
-        brand.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        brandLogo.setVisibility(expanded ? View.VISIBLE : View.GONE);
         for (TextView label : menuLabels) {
             label.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        }
+        // Nuvio-style: center the icons in the collapsed rail
+        int sidePad = expanded ? dp(16) : 0;
+        for (LinearLayout row : menuRows) {
+            row.setGravity(expanded
+                    ? android.view.Gravity.CENTER_VERTICAL
+                    : android.view.Gravity.CENTER);
+            row.setPadding(sidePad, dp(12), sidePad, dp(12));
         }
     }
 
@@ -235,6 +270,7 @@ public class MainActivity extends Activity {
     private void selectMenu(int idx, boolean moveFocus) {
         selected = idx;
         refreshMenuPaint();
+        updateInfo(MENU[idx]);
         content.removeAllViews();
         View screen;
         switch (idx) {
@@ -383,6 +419,9 @@ public class MainActivity extends Activity {
             v.setScaleY(hasFocus ? 1.08f : 1.0f);
             v.setBackgroundColor(hasFocus ? Color.parseColor("#2A4A5A") : Color.TRANSPARENT);
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
+            if (hasFocus) {
+                updateInfo(item.name);
+            }
         });
         card.setOnClickListener(v -> {
             Intent i = new Intent(MainActivity.this, DetailsActivity.class);
@@ -567,10 +606,70 @@ public class MainActivity extends Activity {
         }
 
         TextView foot = new TextView(this);
-        foot.setText("Install from URL — coming in v0.3.");
+        foot.setText("Install from URL — coming in a later version.");
         foot.setTextColor(Color.GRAY);
         foot.setPadding(0, dp(8), 0, 0);
         col.addView(foot);
+
+        TextView sh = new TextView(this);
+        sh.setText("Suggested");
+        sh.setTextSize(22);
+        sh.setTextColor(Color.WHITE);
+        sh.setPadding(0, dp(20), 0, dp(8));
+        col.addView(sh);
+
+        final java.util.Set<String> installed = mgr.addonUrls();
+        for (final String[] s : AddonManager.SUGGESTED_ADDONS) {
+            if (installed.contains(s[1])) {
+                continue;
+            }
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(16), dp(12), dp(16), dp(12));
+            row.setBackgroundColor(Color.parseColor("#1E2126"));
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            rlp.setMargins(0, 0, 0, dp(10));
+            row.setLayoutParams(rlp);
+            row.setFocusable(true);
+            row.setClickable(true);
+            row.setOnFocusChangeListener((v, hasFocus) ->
+                    v.setBackgroundColor(hasFocus
+                            ? Color.parseColor("#2A4A5A") : Color.parseColor("#1E2126")));
+
+            TextView name = new TextView(this);
+            name.setText("＋ " + s[0]);
+            name.setTextSize(18);
+            name.setTextColor(Color.parseColor("#4FC3F7"));
+            row.addView(name);
+
+            TextView sub = new TextView(this);
+            sub.setText(s[2]);
+            sub.setTextColor(Color.GRAY);
+            row.addView(sub);
+
+            row.setOnClickListener(v -> {
+                Toast.makeText(MainActivity.this,
+                        "Installing " + s[0] + "…", Toast.LENGTH_SHORT).show();
+                mgr.installAddon(s[1], new AddonManager.Callback<String>() {
+                    @Override
+                    public void onResult(String addonName) {
+                        Toast.makeText(MainActivity.this,
+                                "Installed: " + addonName, Toast.LENGTH_SHORT).show();
+                        selectMenu(3, false);
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        Toast.makeText(MainActivity.this,
+                                "Install failed: " + e.getMessage(),
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+            });
+            col.addView(row);
+        }
         return col;
     }
 
@@ -728,7 +827,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.4.0 (build 5)");
+        addSettingRow(col, "Version", "0.5.0 (build 6)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
@@ -773,7 +872,7 @@ public class MainActivity extends Activity {
                 HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
                 c.setConnectTimeout(15000);
                 c.setReadTimeout(30000);
-                c.setRequestProperty("User-Agent", "Cahaya/0.2.0 (Android TV)");
+                c.setRequestProperty("User-Agent", "Cahaya/0.5.0 (Android TV)");
                 InputStream in = c.getInputStream();
                 final Bitmap bmp = BitmapFactory.decodeStream(in);
                 in.close();
