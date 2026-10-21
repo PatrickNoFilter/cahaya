@@ -235,7 +235,8 @@ public class TorrentStreamer {
                     // Verify the file header is valid before launching the player.
                     // If the first bytes aren't the MKV/MP4 magic, the data isn't
                     // actually on disk yet (flush issue) — wait for it.
-                    if (hasValidHeader(targetFile)) {
+                    // Also wait for the tail pieces (MKV seek table) so mpv can parse.
+                    if (hasValidHeader(targetFile) && hasTailPieces()) {
                         ready = true;
                         cb.onReady(httpUrl, fileName);
                     }
@@ -265,6 +266,20 @@ public class TorrentStreamer {
             return Math.min((long) n * pieceLen, targetSize);
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    /** Check if the last 2 pieces (MKV seek table) are downloaded. */
+    private boolean hasTailPieces() {
+        TorrentHandle h = handle;
+        if (h == null) return false;
+        try {
+            for (int p = Math.max(lastPiece - 1, firstPiece); p <= lastPiece; p++) {
+                if (!h.havePiece(p)) return false;
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 
