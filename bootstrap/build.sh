@@ -54,19 +54,22 @@ echo "== d8 =="
 ls "$B/dex"
 
 echo "== add dex + native libs =="
-python3 - "$B/base.apk" "$B/dex" "$LTSO64" "$LTSO32" <<'EOF'
+python3 - "$B/base.apk" "$B/dex" "$ROOT" <<'EOF'
 import sys, zipfile, os
-apk, dexdir, so64, so32 = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+apk, dexdir, root = sys.argv[1], sys.argv[2], sys.argv[3]
 with zipfile.ZipFile(apk, 'a', zipfile.ZIP_DEFLATED) as z:
     for f in sorted(os.listdir(dexdir)):
         if f.endswith('.dex'):
             z.write(os.path.join(dexdir, f), f)
             print("  dex added:", f)
     # native libs must be stored uncompressed for the loader
-    z.write(so64, 'lib/arm64-v8a/libtorrent4j.so', compress_type=zipfile.ZIP_STORED)
-    print("  so added: lib/arm64-v8a/libtorrent4j.so")
-    z.write(so32, 'lib/armeabi-v7a/libtorrent4j.so', compress_type=zipfile.ZIP_STORED)
-    print("  so added: lib/armeabi-v7a/libtorrent4j.so")
+    # include all .so from jniLibs (libtorrent4j + mpv + ffmpeg)
+    import glob
+    for abi in ['arm64-v8a', 'armeabi-v7a']:
+        for so in sorted(glob.glob(os.path.join(root, 'jniLibs', abi, '*.so'))):
+            name = 'lib/' + abi + '/' + os.path.basename(so)
+            z.write(so, name, compress_type=zipfile.ZIP_STORED)
+            print("  so added:", name)
 EOF
 
 echo "== zipalign =="
