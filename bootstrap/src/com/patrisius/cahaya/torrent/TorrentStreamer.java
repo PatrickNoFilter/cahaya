@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public class TorrentStreamer {
     private static final String TAG = "TorrentStreamer";
-    private static final long READY_BYTES = 20L * 1024 * 1024; // start playback after this much
+    private static final long READY_BYTES = 8L * 1024 * 1024; // start playback after this much
     private static final int META_TIMEOUT_S = 120;
 
     public interface Callback {
@@ -172,7 +172,7 @@ public class TorrentStreamer {
 
             httpServer = new HttpFileServer();
             String httpUrl = httpServer.start(targetFile, targetSize, fileName,
-                    () -> downloadedContiguous());
+                    (s, e) -> isRangeAvailable(s, e));
 
             long need = Math.min(READY_BYTES, targetSize);
             boolean ready = false;
@@ -238,6 +238,26 @@ public class TorrentStreamer {
             return Math.min((long) n * pieceLen, targetSize);
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    /** Check whether bytes [start, end] of our file are on disk. */
+    private boolean isRangeAvailable(long start, long end) {
+        TorrentHandle h = handle;
+        if (h == null || pieceLen <= 0) return false;
+        try {
+            // Flush so havePiece matches what's readable from disk.
+            h.flushCache();
+            int p0 = firstPiece + (int) (start / pieceLen);
+            int p1 = firstPiece + (int) (end / pieceLen);
+            if (p0 < firstPiece) p0 = firstPiece;
+            if (p1 > lastPiece) p1 = lastPiece;
+            for (int p = p0; p <= p1; p++) {
+                if (!h.havePiece(p)) return false;
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 

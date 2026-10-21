@@ -16,37 +16,41 @@ import java.util.concurrent.Executors;
  * Tiny local HTTP server that serves a single growing file with Range
  * support, so MediaPlayer can stream a torrent while it downloads.
  *
- * If the player asks for bytes that aren't downloaded yet, the handler
- * waits (up to WAIT_MS) for them to arrive instead of failing.
+ * Key design: wait only for the FIRST chunk of a requested range, then
+ * stream chunk-by-chunk, waiting for each chunk as it arrives. Never
+ * wait for the whole range (which never completes while streaming).
+ * Always reports the true full Content-Length.
  */
 public class HttpFileServer {
     private static final String TAG = "HttpFileServer";
     private static final long WAIT_MS = 45000;
-    private static final long POLL_MS = 500;
+    private static final long POLL_MS = 250;
+    private static final long FIRST_CHUNK = 1024 * 1024; // 1 MB
+    private static final int CHUNK = 256 * 1024; // 256 KB streaming chunks
 
     private ServerSocket server;
     private ExecutorService pool;
     private volatile File file;
     private volatile long fileSize;
     private volatile String contentType = "video/mp4";
-    private volatile BytesAvailable bytesAvailable;
+    private volatile RangeAvailable rangeAvailable;
     private int port;
 
-    /** Reports how many bytes from the start of the file are playable. */
-    public interface BytesAvailable {
-        long get();
+    /** Reports whether bytes [start, end] are available on disk. */
+    public interface RangeAvailable {
+        boolean isAvailable(long start, long end);
     }
 
     /** Starts on 127.0.0.1, first free port 8901-8910. Returns base URL. */
     public String start(File file, long fileSize, String fileName,
-                        BytesAvailable bytesAvailable) throws Exception {
+                        RangeAvailable rangeAvailable) throws Exception {
         this.file = file;
         this.fileSize = fileSize;
-        this.bytesAvailable = bytesAvailable;
+        this.rangeAvailable = rangeAvailable;
         this.contentType = mimeFor(fileName);
         for (int p = 8901; p <= 8910; p++) {
             try {
-                server = new ServerSocket(p, 8,
+                server = new ServerSocket(p, 32,
                         java.net.InetAddress.getByName("127.0.0.1"));
                 port = p;
                 break;
@@ -79,9 +83,27 @@ public class HttpFileServer {
         if (pool != null) pool.shutdownNow();
     }
 
+    /** Wait until bytes [start, end] are available, or timeout. */
+    private boolean waitForRange(long start, long end) {
+        long deadline = System.currentTimeMillis() + WAIT_MS;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                if (rangeAvailable.isAvailable(start, end)) return true;
+            } catch (Exception e) {
+                return false;
+            }
+            try {
+                Thread.sleep(POLL_MS);
+            } catch (InterruptedException e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     private void handle(Socket sock) {
         try (Socket s = sock) {
-            s.setSoTimeout(60000);
+            s.setSoTimeout(90000);
             BufferedReader in = new BufferedReader(
                     new InputStreamReader(s.getInputStream()));
             String reqLine = in.readLine();
@@ -112,40 +134,40 @@ public class HttpFileServer {
                 sendStatus(s.getOutputStream(), 416, 0, 0, 0);
                 return;
             }
+            if (end < start) end = start;
 
-            // Wait for the requested bytes to be downloaded.
-            long deadline = System.currentTimeMillis() + WAIT_MS;
-            while (System.currentTimeMillis() < deadline) {
-                long have = bytesAvailable.get();
-                if (have > end) break;
-                try {
-                    Thread.sleep(POLL_MS);
-                } catch (InterruptedException e) {
-                    return;
-                }
-            }
-            long have = bytesAvailable.get();
-            if (have <= start) {
+            // Wait only for the first chunk, not the whole range.
+            long firstEnd = Math.min(end, start + FIRST_CHUNK - 1);
+            if (!waitForRange(start, firstEnd)) {
                 sendStatus(s.getOutputStream(), 408, 0, 0, 0);
                 return;
             }
-            end = Math.min(end, have - 1);
 
             OutputStream out = s.getOutputStream();
+            // Always report the FULL requested length, not a truncated one.
             sendStatus(out, partial ? 206 : 200, start, end, fileSize);
             if (isHead) return;
 
+            // Stream chunk by chunk, waiting for each as needed.
             try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-                raf.seek(start);
-                byte[] buf = new byte[64 * 1024];
-                long remaining = end - start + 1;
-                while (remaining > 0) {
-                    int n = raf.read(buf, 0, (int) Math.min(buf.length, remaining));
-                    if (n < 0) break;
-                    out.write(buf, 0, n);
-                    remaining -= n;
+                long pos = start;
+                byte[] buf = new byte[CHUNK];
+                while (pos <= end) {
+                    long chunkEnd = Math.min(pos + CHUNK - 1, end);
+                    if (!waitForRange(pos, chunkEnd)) {
+                        break; // timeout: end stream early
+                    }
+                    raf.seek(pos);
+                    long remaining = chunkEnd - pos + 1;
+                    while (remaining > 0) {
+                        int n = raf.read(buf, 0, (int) Math.min(buf.length, remaining));
+                        if (n < 0) break;
+                        out.write(buf, 0, n);
+                        remaining -= n;
+                    }
+                    out.flush();
+                    pos = chunkEnd + 1;
                 }
-                out.flush();
             }
         } catch (Exception e) {
             Log.d(TAG, "handler: " + e.getMessage());
