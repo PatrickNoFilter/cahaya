@@ -361,15 +361,24 @@ public class DetailsActivity extends Activity {
         final java.util.List<String> addonUrls = new java.util.ArrayList<>(mgr.addonUrls());
         final java.util.concurrent.atomic.AtomicInteger pending =
                 new java.util.concurrent.atomic.AtomicInteger(addonUrls.size());
+        final java.util.concurrent.atomic.AtomicBoolean launched =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final Runnable launchOnce = () -> {
+            if (launched.compareAndSet(false, true)) {
+                String subUrl = subs.isEmpty() ? null : subs.get(0).url;
+                main.post(() -> launchTorrentPlayer(httpUrl, title, subUrl));
+            }
+        };
         if (pending.get() == 0) {
-            launchTorrentPlayer(httpUrl, title, null);
+            launchOnce.run();
             return;
         }
         final Runnable done = () -> {
             if (pending.decrementAndGet() > 0) return;
-            String subUrl = subs.isEmpty() ? null : subs.get(0).url;
-            main.post(() -> launchTorrentPlayer(httpUrl, title, subUrl));
+            launchOnce.run();
         };
+        // Timeout: don't wait forever for slow/hanging subtitle addons.
+        main.postDelayed(launchOnce, 8000);
         for (String base : addonUrls) {
             mgr.subtitles(base, itemType, videoId,
                     new AddonManager.Callback<java.util.List<SubtitleItem>>() {

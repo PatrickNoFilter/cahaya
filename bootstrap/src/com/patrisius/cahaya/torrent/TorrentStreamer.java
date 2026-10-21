@@ -4,7 +4,6 @@ import android.content.Context;
 import android.util.Log;
 
 import org.libtorrent4j.FileStorage;
-import org.libtorrent4j.PieceIndexBitfield;
 import org.libtorrent4j.Priority;
 import org.libtorrent4j.SessionManager;
 import org.libtorrent4j.TorrentHandle;
@@ -144,13 +143,32 @@ public class TorrentStreamer {
             prios[idx] = Priority.TOP_PRIORITY;
             h.prioritizeFiles(prios);
 
-            // Sequential pieces across our file's range.
+            // Time-critical pieces (Nuvio mechanism): mark the head pieces
+            // with deadline=0 so libtorrent actively prioritizes them across
+            // all peers. More effective than sequential mode for streaming.
             pieceLen = ti.pieceLength();
             long off = fs.fileOffset(idx);
             firstPiece = (int) (off / pieceLen);
             lastPiece = (int) ((off + targetSize - 1) / pieceLen);
-            h.setSequentialRange(firstPiece, lastPiece);
             handle = h;
+
+            int totalPieces = lastPiece - firstPiece + 1;
+            // Head: first 8 pieces (or fewer), deadline 0 = needed now.
+            int headN = Math.min(8, totalPieces);
+            for (int p = firstPiece; p < firstPiece + headN; p++) {
+                try {
+                    h.setPieceDeadline(p, 0);
+                    h.piecePriority(p, Priority.TOP_PRIORITY);
+                } catch (Exception ignored) {
+                }
+            }
+            // Tail: last 2 pieces hold the MKV seek table; fetch early too.
+            for (int p = Math.max(lastPiece - 1, firstPiece + headN); p <= lastPiece; p++) {
+                try {
+                    h.setPieceDeadline(p, 0);
+                } catch (Exception ignored) {
+                }
+            }
 
             httpServer = new HttpFileServer();
             String httpUrl = httpServer.start(targetFile, targetSize, fileName,
@@ -196,11 +214,9 @@ public class TorrentStreamer {
         TorrentHandle h = handle;
         if (h == null || pieceLen <= 0) return 0;
         try {
-            TorrentStatus st = h.status(TorrentHandle.QUERY_PIECES);
-            PieceIndexBitfield bf = st.pieces();
             int n = 0;
             for (int p = firstPiece; p <= lastPiece; p++) {
-                if (bf.getBit(p)) n++;
+                if (h.havePiece(p)) n++;
                 else break;
             }
             return Math.min((long) n * pieceLen, targetSize);
