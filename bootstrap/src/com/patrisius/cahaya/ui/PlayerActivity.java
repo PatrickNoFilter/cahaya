@@ -25,6 +25,7 @@ import android.widget.Toast;
 import com.patrisius.cahaya.CahayaApp;
 import com.patrisius.cahaya.addon.AddonManager;
 import com.patrisius.cahaya.addon.SubtitleItem;
+import com.patrisius.cahaya.torrent.TorrentStreamer;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
 
@@ -505,6 +506,7 @@ public class PlayerActivity extends Activity
     @Override
     protected void onDestroy() {
         releasePlayer();
+        TorrentStreamer.stopActive();
         super.onDestroy();
     }
 }

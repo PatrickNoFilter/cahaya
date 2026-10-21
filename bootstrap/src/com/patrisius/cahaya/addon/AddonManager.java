@@ -194,17 +194,35 @@ public class AddonManager {
                                 for (int i = 0; i < arr.length(); i++) {
                                     JSONObject s = arr.getJSONObject(i);
                                     String u = s.optString("url", "");
+                                    int fileIdx = s.optInt("fileIdx", -1);
                                     if (u.isEmpty()) {
-                                        continue;
+                                        // Torrentio-style: infoHash instead of url
+                                        u = magnetFor(s);
+                                        if (u.isEmpty()) {
+                                            continue;
+                                        }
                                     }
-                                    String t = s.optString("title",
-                                            s.optString("name", "Stream"));
+                                    String name = s.optString("name", "");
+                                    String t = s.optString("title", name);
+                                    if (t.isEmpty()) {
+                                        t = name.isEmpty() ? "Stream" : name;
+                                    }
                                     // Stremio titles are often "filename\nsize ▲"; first line is enough
                                     int nl = t.indexOf('\n');
                                     if (nl > 0) {
                                         t = t.substring(0, nl);
                                     }
-                                    out.add(new StreamItem(u, t, baseUrl));
+                                    // Torrentio puts quality ("4k HDR") on name's 2nd line
+                                    int nnl = name.indexOf('\n');
+                                    if (nnl > 0 && nnl + 1 < name.length()) {
+                                        String qual = name.substring(nnl + 1).trim();
+                                        int qnl = qual.indexOf('\n');
+                                        if (qnl > 0) qual = qual.substring(0, qnl);
+                                        if (!qual.isEmpty()) {
+                                            t = "[" + qual + "] " + t;
+                                        }
+                                    }
+                                    out.add(new StreamItem(u, t, baseUrl, fileIdx));
                                 }
                             }
                             cb.onResult(out);
@@ -264,6 +282,61 @@ public class AddonManager {
                         }
                     }
                 });
+    }
+
+    /** Public trackers baked into every magnet: Torrentio entries often carry
+     *  no sources of their own, and pure-DHT metadata fetch stalls. */
+    private static final String[] PUBLIC_TRACKERS = {
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.stealth.si:80/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://explodie.org:6969/announce",
+        "udp://tracker.bittor.pw:1337/announce",
+        "udp://tracker1.bt.moack.co.kr:80/announce",
+        "udp://tracker.edkj.club:6969/announce",
+    };
+
+    /** Builds a magnet URI from a stream entry carrying infoHash (+ trackers). */
+    private static String magnetFor(JSONObject s) {
+        String infoHash = s.optString("infoHash", "").trim();
+        if (infoHash.isEmpty()) {
+            return "";
+        }
+        StringBuilder m = new StringBuilder("magnet:?xt=urn:btih:")
+                .append(infoHash);
+        try {
+            String dn = s.optString("title", s.optString("name", ""));
+            int nl = dn.indexOf('\n');
+            if (nl > 0) dn = dn.substring(0, nl);
+            dn = dn.trim();
+            if (!dn.isEmpty()) {
+                m.append("&dn=").append(java.net.URLEncoder.encode(dn, "UTF-8"));
+            }
+            java.util.LinkedHashSet<String> trackers = new java.util.LinkedHashSet<>();
+            JSONArray sources = s.optJSONArray("sources");
+            if (sources != null) {
+                for (int i = 0; i < sources.length(); i++) {
+                    String tr = sources.optString(i, "").trim();
+                    // Torrentio lists trackers as "tracker:udp://..."
+                    if (tr.startsWith("tracker:")) {
+                        tr = tr.substring("tracker:".length());
+                    }
+                    if (!tr.isEmpty() && !tr.startsWith("dht:")) {
+                        trackers.add(tr);
+                    }
+                }
+            }
+            for (String tr : PUBLIC_TRACKERS) {
+                trackers.add(tr);
+            }
+            for (String tr : trackers) {
+                m.append("&tr=").append(
+                        java.net.URLEncoder.encode(tr, "UTF-8"));
+            }
+        } catch (Exception ignored) {
+        }
+        return m.toString();
     }
 
     private static String hostOf(String url) {

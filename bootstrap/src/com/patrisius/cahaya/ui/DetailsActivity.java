@@ -25,6 +25,8 @@ import com.patrisius.cahaya.CahayaApp;
 import com.patrisius.cahaya.addon.AddonManager;
 import com.patrisius.cahaya.addon.MetaDetails;
 import com.patrisius.cahaya.addon.StreamItem;
+import com.patrisius.cahaya.addon.SubtitleItem;
+import com.patrisius.cahaya.torrent.TorrentStreamer;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
 
@@ -268,12 +270,17 @@ public class DetailsActivity extends Activity {
         String[] labels = new String[streams.size()];
         for (int i = 0; i < streams.size(); i++) {
             StreamItem s = streams.get(i);
-            labels[i] = s.title + "\n" + hostOf(s.source);
+            labels[i] = s.title + "\n" + hostOf(s.source)
+                    + (s.isTorrent() ? " · torrent" : "");
         }
         new AlertDialog.Builder(this)
                 .setTitle("Choose stream")
                 .setItems(labels, (d, which) -> {
                     StreamItem s = streams.get(which);
+                    if (s.isTorrent()) {
+                        playTorrent(title, videoId, s);
+                        return;
+                    }
                     Intent i = new Intent(DetailsActivity.this, PlayerActivity.class);
                     i.putExtra("url", s.url);
                     i.putExtra("title", title);
@@ -283,6 +290,97 @@ public class DetailsActivity extends Activity {
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    /** Nuvio-style: stream the torrent through our own engine. */
+    private void playTorrent(String title, String videoId, StreamItem s) {
+        TextView msg = new TextView(this);
+        msg.setPadding(48, 32, 48, 32);
+        msg.setTextSize(18);
+        msg.setText("Starting…");
+        AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("Torrent")
+                .setView(msg)
+                .setNegativeButton("Cancel", (d, w) -> TorrentStreamer.stopActive())
+                .setCancelable(false)
+                .create();
+        dlg.show();
+
+        new TorrentStreamer().start(this, s.url, s.fileIdx,
+                new TorrentStreamer.Callback() {
+                    @Override
+                    public void onProgress(String stage, int percent, String detail) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) {
+                                msg.setText(stage + "\n" + percent + "%"
+                                        + (detail.isEmpty() ? "" : "\n" + detail));
+                            }
+                        });
+                    }
+
+                    @Override
+                    public void onReady(String httpUrl, String fileName) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) dlg.dismiss();
+                            // Subtitles for this video, if any addon has them.
+                            findSubtitles(videoId, fileName, httpUrl, title);
+                        });
+                    }
+
+                    @Override
+                    public void onError(String errMsg) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) dlg.dismiss();
+                            Toast.makeText(DetailsActivity.this, errMsg,
+                                    Toast.LENGTH_LONG).show();
+                        });
+                    }
+                });
+    }
+
+    /** Look up subtitles, then launch the player with the torrent's http URL. */
+    private void findSubtitles(String videoId, String fileName, String httpUrl,
+                               String title) {
+        final java.util.List<SubtitleItem> subs = new java.util.ArrayList<>();
+        final java.util.List<String> addonUrls = new java.util.ArrayList<>(mgr.addonUrls());
+        final java.util.concurrent.atomic.AtomicInteger pending =
+                new java.util.concurrent.atomic.AtomicInteger(addonUrls.size());
+        if (pending.get() == 0) {
+            launchTorrentPlayer(httpUrl, title, null);
+            return;
+        }
+        final Runnable done = () -> {
+            if (pending.decrementAndGet() > 0) return;
+            String subUrl = subs.isEmpty() ? null : subs.get(0).url;
+            main.post(() -> launchTorrentPlayer(httpUrl, title, subUrl));
+        };
+        for (String base : addonUrls) {
+            mgr.subtitles(base, itemType, videoId,
+                    new AddonManager.Callback<java.util.List<SubtitleItem>>() {
+                        @Override
+                        public void onResult(java.util.List<SubtitleItem> items) {
+                            synchronized (subs) {
+                                subs.addAll(items);
+                            }
+                            main.post(done);
+                        }
+
+                        @Override
+                        public void onError(Exception e) {
+                            main.post(done);
+                        }
+                    });
+        }
+    }
+
+    private void launchTorrentPlayer(String httpUrl, String title, String subUrl) {
+        Intent i = new Intent(DetailsActivity.this, PlayerActivity.class);
+        i.putExtra("url", httpUrl);
+        i.putExtra("title", title);
+        i.putExtra("type", itemType);
+        i.putExtra("video_id", "");
+        if (subUrl != null) i.putExtra("sub_url", subUrl);
+        startActivity(i);
     }
 
     private static String hostOf(String url) {
