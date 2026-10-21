@@ -1,14 +1,14 @@
-package com.patrisius.streambox
+package com.patrisius.cahaya
 
 import android.app.Application
-import com.patrisius.streambox.addon.AddonManager
-import com.patrisius.streambox.plugin.PluginManager
+import com.patrisius.cahaya.addon.AddonManager
+import com.patrisius.cahaya.plugin.PluginManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-class StreamBoxApp : Application() {
+class CahayaApp : Application() {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 

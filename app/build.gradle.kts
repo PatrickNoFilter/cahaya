@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.patrisius.streambox"
+    namespace = "com.patrisius.cahaya"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.patrisius.streambox"
+        applicationId = "com.patrisius.cahaya"
         minSdk = 26          // Android 8.0 — covers all modern Android TV boxes
         targetSdk = 35
         versionCode = 1

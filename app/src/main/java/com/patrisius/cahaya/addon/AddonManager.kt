@@ -1,9 +1,9 @@
-package com.patrisius.streambox.addon
+package com.patrisius.cahaya.addon
 
 import android.content.Context
-import com.patrisius.streambox.model.MediaItem
-import com.patrisius.streambox.model.StreamSource
-import com.patrisius.streambox.model.SubtitleTrack
+import com.patrisius.cahaya.model.MediaItem
+import com.patrisius.cahaya.model.StreamSource
+import com.patrisius.cahaya.model.SubtitleTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
@@ -145,7 +145,7 @@ class AddonManager(
     }
 
     companion object {
-        private const val PREFS = "streambox_addons"
+        private const val PREFS = "cahaya_addons"
         private const val KEY_URLS = "transport_urls"
     }
 }

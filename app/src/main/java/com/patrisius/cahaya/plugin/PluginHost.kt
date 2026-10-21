@@ -1,4 +1,4 @@
-package com.patrisius.streambox.plugin
+package com.patrisius.cahaya.plugin
 
 import android.content.Context
 
@@ -9,12 +9,12 @@ import android.content.Context
  * streams and subtitles. Native plugins exist for what that protocol can't
  * express: custom scrapers, extra metadata providers, UI extensions —
  * the CloudStream-extension style of plugin, but designed originally for
- * StreamBox (no code taken from CloudStream).
+ * Cahaya (no code taken from CloudStream).
  *
  * This file is the contract stub. Phase 3 work: plugin packaging (.apk with
  * a Plugin entry-point), sandboxed class loading, and provider registration.
  */
-interface StreamBoxPlugin {
+interface CahayaPlugin {
     val id: String
     val name: String
     val version: String
@@ -31,12 +31,12 @@ interface PluginHost {
 }
 
 class PluginManager(private val context: Context) {
-    private val plugins = mutableListOf<StreamBoxPlugin>()
+    private val plugins = mutableListOf<CahayaPlugin>()
 
-    fun installedPlugins(): List<StreamBoxPlugin> = plugins.toList()
+    fun installedPlugins(): List<CahayaPlugin> = plugins.toList()
 
     /** Phase 3: load a plugin package and call onLoad(). */
-    fun load(packagePath: String): Result<StreamBoxPlugin> =
+    fun load(packagePath: String): Result<CahayaPlugin> =
         Result.failure(UnsupportedOperationException("Native plugins land in phase 3"))
 
     fun unload(id: String) {

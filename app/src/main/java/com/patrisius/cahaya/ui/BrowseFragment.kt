@@ -1,4 +1,4 @@
-package com.patrisius.streambox.ui
+package com.patrisius.cahaya.ui
 
 import android.os.Bundle
 import androidx.leanback.app.BackgroundManager
@@ -7,7 +7,7 @@ import androidx.leanback.widget.ArrayObjectAdapter
 import androidx.leanback.widget.HeaderItem
 import androidx.leanback.widget.ListRow
 import androidx.leanback.widget.ListRowPresenter
-import com.patrisius.streambox.StreamBoxApp
+import com.patrisius.cahaya.CahayaApp
 
 /**
  * Phase 2 skeleton: the TV home screen.
@@ -24,7 +24,7 @@ class BrowseFragment : BrowseSupportFragment() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        title = "StreamBox"          // TODO: real name from strings.xml
+        title = "Cahaya"          // TODO: real name from strings.xml
         headersState = HEADERS_ENABLED
         isHeadersTransitionOnBackEnabled = true
 
@@ -42,7 +42,7 @@ class BrowseFragment : BrowseSupportFragment() {
         adapter = rowsAdapter
 
         // TODO phase 2: replace placeholders —
-        //   val mgr = (requireContext().applicationContext as StreamBoxApp).addonManager
+        //   val mgr = (requireContext().applicationContext as CahayaApp).addonManager
         //   mgr.catalogAddons("movie").forEach { client ->
         //       client.manifest?.catalogs?.forEach { catalog ->
         //           rowsAdapter.add(ListRow(HeaderItem(...), cards(client.catalog(...))))

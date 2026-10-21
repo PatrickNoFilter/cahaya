@@ -1,4 +1,4 @@
-package com.patrisius.streambox.model
+package com.patrisius.cahaya.model
 
 import kotlinx.serialization.Serializable
 

@@ -1,4 +1,4 @@
-package com.patrisius.streambox.ui
+package com.patrisius.cahaya.ui
 
 import android.net.Uri
 import android.os.Bundle
@@ -9,7 +9,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
-import com.patrisius.streambox.addon.AddonClient
+import com.patrisius.cahaya.addon.AddonClient
 
 /**
  * Phase 2 skeleton: Media3 playback.

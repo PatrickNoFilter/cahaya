@@ -1,14 +1,15 @@
-# StreamBox (working title)
+# Cahaya
 
 An Android TV media-center app built from scratch — in the spirit of Stremio,
 Nuvio and CloudStream — with support for community addons and plugins.
 
-> **Name is a placeholder.** Patrisius picks the real name; renaming is a
-> package-name + strings change, nothing structural.
+> **Cahaya** (Indonesian/Malay for "light", from Sanskrit छाया *chāyā* via
+> Old Javanese *cahya*) — name decided 2026-10-21 after a collision check
+> (StreamBox taken, Evestream too close to EVStream).
 
 ## The idea
 
-StreamBox hosts **no content**. It is a client shell that talks to addons:
+Cahaya hosts **no content**. It is a client shell that talks to addons:
 
 1. **Stremio addon protocol** (phase 1–2, the big win): any addon that exposes
    a `manifest.json` works — catalog, meta, stream and subtitle resources over
@@ -34,7 +35,7 @@ StreamBox hosts **no content**. It is a client shell that talks to addons:
 ## Layout
 
 ```
-app/src/main/java/com/patrisius/streambox/
+app/src/main/java/com/patrisius/cahaya/
   addon/          # Stremio-protocol engine: manifest model, HTTP client, manager
   model/          # MediaItem, Episode, StreamSource, SubtitleTrack
   plugin/         # Phase-3 native plugin host (stub)
@@ -58,7 +59,7 @@ and JDK; the manual aapt2/javac/d8 pipeline in `~/workspace/tvhome-build`
 is the fallback if Gradle misbehaves in this sandbox.
 
 ```
-cd ~/workspace/streambox
+cd ~/workspace/cahaya
 gradle :app:assembleDebug        # or ./gradlew once the wrapper jar is added
 ```
 

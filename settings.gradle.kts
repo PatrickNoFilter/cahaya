@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "StreamBox"
+rootProject.name = "Cahaya"
 include(":app")

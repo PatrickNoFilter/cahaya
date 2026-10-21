@@ -1,4 +1,4 @@
-package com.patrisius.streambox.ui
+package com.patrisius.cahaya.ui
 
 import android.view.ViewGroup
 import android.widget.TextView

@@ -1,10 +1,10 @@
-package com.patrisius.streambox.addon
+package com.patrisius.cahaya.addon
 
-import com.patrisius.streambox.model.Episode
-import com.patrisius.streambox.model.MediaItem
-import com.patrisius.streambox.model.StreamSource
-import com.patrisius.streambox.model.SubtitleTrack
-import com.patrisius.streambox.model.Trailer
+import com.patrisius.cahaya.model.Episode
+import com.patrisius.cahaya.model.MediaItem
+import com.patrisius.cahaya.model.StreamSource
+import com.patrisius.cahaya.model.SubtitleTrack
+import com.patrisius.cahaya.model.Trailer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -194,7 +194,7 @@ class AddonClient(
     private fun get(url: String): String {
         val req = Request.Builder()
             .url(url)
-            .header("User-Agent", "StreamBox/0.1.0 (Android TV)")
+            .header("User-Agent", "Cahaya/0.1.0 (Android TV)")
             .header("Accept", "application/json")
             .build()
         http.newCall(req).execute().use { resp ->

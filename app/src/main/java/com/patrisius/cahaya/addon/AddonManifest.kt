@@ -1,4 +1,4 @@
-package com.patrisius.streambox.addon
+package com.patrisius.cahaya.addon
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
