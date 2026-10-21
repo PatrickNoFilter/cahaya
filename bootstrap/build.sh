@@ -18,7 +18,7 @@ JDK=/home/hatch/workspace/jdk/jdk-17.0.20.1+1/bin
 export PATH="$JDK:$PATH"   # javac, keytool, and java (needed by d8)
 KS=/home/hatch/workspace/cahaya/keystore/cahaya.jks
 KSPASS="cahaya01"
-APK="$ROOT/Cahaya-v0.3.1.apk"
+APK="$ROOT/Cahaya-v0.4.apk"
 
 if [ ! -f "$KS" ]; then
     echo "keystore missing: $KS (generate it first, keep it safe)"
@@ -35,7 +35,7 @@ echo "== aapt2 link =="
 $BT/aapt2 link -o "$B/base.apk" -I "$AJAR" \
     --manifest "$ROOT/AndroidManifest.xml" \
     --min-sdk-version 26 --target-sdk-version 34 \
-    --version-code 4 --version-name "0.3.1" \
+    --version-code 5 --version-name "0.4.0" \
     --java "$B/gen" \
     "$B/flats.zip"
 

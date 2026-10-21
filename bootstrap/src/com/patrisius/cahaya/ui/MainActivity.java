@@ -2,6 +2,7 @@ package com.patrisius.cahaya.ui;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.animation.ValueAnimator;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -51,6 +52,7 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
 
     private static final String[] MENU = {"Home", "Search", "Library", "Addons", "Plugins", "Settings"};
+    private static final String[] ICONS = {"🏠", "🔍", "📚", "🧩", "🔌", "⚙️"};
 
     private final ExecutorService imgIo = Executors.newFixedThreadPool(4);
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -58,8 +60,11 @@ public class MainActivity extends Activity {
 
     private LinearLayout sidebar;
     private FrameLayout content;
-    private final List<TextView> menuViews = new ArrayList<>();
+    private TextView brand;
+    private final List<LinearLayout> menuRows = new ArrayList<>();
+    private final List<TextView> menuLabels = new ArrayList<>();
     private int selected = 0;
+    private boolean sidebarExpanded = true;
 
     private LinearLayout homeRows;
     private TextView homeStatus;
@@ -91,29 +96,47 @@ public class MainActivity extends Activity {
         sidebar = new LinearLayout(this);
         sidebar.setOrientation(LinearLayout.VERTICAL);
         sidebar.setBackgroundColor(Color.parseColor("#1B1E23"));
-        int sideW = dp(230);
+        int sideW = dp(280);
         root.addView(sidebar, new LinearLayout.LayoutParams(
                 sideW, ViewGroup.LayoutParams.MATCH_PARENT));
 
         TextView brand = new TextView(this);
+        this.brand = brand;
         brand.setText("Cahaya");
-        brand.setTextSize(30);
+        brand.setTextSize(26);
+        brand.setSingleLine(true);
         brand.setTextColor(Color.parseColor("#4FC3F7"));
         brand.setPadding(dp(20), dp(28), dp(20), dp(20));
         sidebar.addView(brand);
 
         for (int i = 0; i < MENU.length; i++) {
             final int idx = i;
-            TextView item = new TextView(this);
-            item.setText(MENU[i]);
-            item.setTextSize(18);
-            item.setPadding(dp(20), dp(14), dp(20), dp(14));
-            item.setFocusable(true);
-            item.setClickable(true);
-            item.setOnClickListener(v -> selectMenu(idx, true));
-            item.setOnFocusChangeListener((v, hasFocus) -> paintMenuItem(item, idx, hasFocus));
-            sidebar.addView(item);
-            menuViews.add(item);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(16), dp(12), dp(16), dp(12));
+            row.setFocusable(true);
+            row.setClickable(true);
+
+            TextView icon = new TextView(this);
+            icon.setText(ICONS[i]);
+            icon.setTextSize(24);
+            row.addView(icon, new LinearLayout.LayoutParams(dp(40),
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            TextView label = new TextView(this);
+            label.setText(MENU[i]);
+            label.setTextSize(17);
+            label.setSingleLine(true);
+            row.addView(label, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            row.setOnClickListener(v -> selectMenu(idx, true));
+            row.setOnFocusChangeListener((v, hasFocus) -> paintMenuItem(idx, hasFocus));
+            sidebar.addView(row);
+            menuRows.add(row);
+            menuLabels.add(label);
         }
 
         content = new FrameLayout(this);
@@ -122,6 +145,13 @@ public class MainActivity extends Activity {
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         setContentView(root);
+        root.getViewTreeObserver().addOnGlobalFocusChangeListener(
+                (oldFocus, newFocus) -> {
+                    if (newFocus == null) {
+                        return;
+                    }
+                    setSidebarExpanded(isUnder(newFocus, sidebar));
+                });
 
         mgr = ((CahayaApp) getApplication()).addons();
         plugins = new PluginManager(this, mgr);
@@ -129,7 +159,7 @@ public class MainActivity extends Activity {
             @Override
             public void onResult(Boolean fresh) {
                 selectMenu(0, false);
-                menuViews.get(0).requestFocus();
+                menuRows.get(0).requestFocus();
             }
 
             @Override
@@ -142,25 +172,64 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void paintMenuItem(TextView item, int idx, boolean focused) {
+    private void paintMenuItem(int idx, boolean focused) {
+        LinearLayout row = menuRows.get(idx);
+        TextView label = menuLabels.get(idx);
         boolean isSel = idx == selected;
         if (isSel) {
-            item.setBackgroundColor(focused
+            row.setBackgroundColor(focused
                     ? Color.parseColor("#35617A") : Color.parseColor("#2A4A5A"));
-            item.setTextColor(Color.WHITE);
+            label.setTextColor(Color.WHITE);
         } else {
-            item.setBackgroundColor(focused
+            row.setBackgroundColor(focused
                     ? Color.parseColor("#26292F") : Color.TRANSPARENT);
-            item.setTextColor(focused ? Color.WHITE : Color.parseColor("#9AA0A6"));
+            label.setTextColor(focused ? Color.WHITE : Color.parseColor("#9AA0A6"));
         }
-        item.setScaleX(focused ? 1.04f : 1.0f);
-        item.setScaleY(focused ? 1.04f : 1.0f);
+        row.setScaleX(focused ? 1.04f : 1.0f);
+        row.setScaleY(focused ? 1.04f : 1.0f);
     }
 
     private void refreshMenuPaint() {
-        for (int i = 0; i < menuViews.size(); i++) {
-            paintMenuItem(menuViews.get(i), i, menuViews.get(i).isFocused());
+        for (int i = 0; i < menuRows.size(); i++) {
+            paintMenuItem(i, menuRows.get(i).isFocused());
         }
+    }
+
+    /**
+     * Collapses the sidebar to an icon rail when focus moves into the
+     * content pane, and expands it (icons + labels) when focus returns.
+     */
+    private void setSidebarExpanded(boolean expanded) {
+        if (sidebarExpanded == expanded) {
+            return;
+        }
+        sidebarExpanded = expanded;
+        int from = sidebar.getWidth();
+        int to = dp(expanded ? 280 : 76);
+        ValueAnimator anim = ValueAnimator.ofInt(from, to);
+        anim.setDuration(220);
+        anim.addUpdateListener(a -> {
+            LinearLayout.LayoutParams lp =
+                    (LinearLayout.LayoutParams) sidebar.getLayoutParams();
+            lp.width = (int) a.getAnimatedValue();
+            sidebar.setLayoutParams(lp);
+        });
+        anim.start();
+        brand.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        for (TextView label : menuLabels) {
+            label.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private static boolean isUnder(View v, ViewGroup parent) {
+        android.view.ViewParent p = v.getParent();
+        while (p != null) {
+            if (p == parent) {
+                return true;
+            }
+            p = p.getParent();
+        }
+        return false;
     }
 
     private void selectMenu(int idx, boolean moveFocus) {
@@ -659,7 +728,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.3.0 (build 3)");
+        addSettingRow(col, "Version", "0.4.0 (build 5)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
