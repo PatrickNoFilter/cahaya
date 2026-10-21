@@ -102,7 +102,32 @@ public class TorrentStreamer {
 
             progress(cb, "Fetching metadata…", 1,
                     "asking peers & trackers");
-            byte[] torrentBytes = session.fetchMagnet(magnetUri, META_TIMEOUT_S, tmp);
+            // Run fetch in a thread so we can show elapsed time (it blocks).
+            final byte[][] result = new byte[1][];
+            Thread fetchThread = new Thread(() -> {
+                try {
+                    result[0] = session.fetchMagnet(magnetUri, META_TIMEOUT_S, tmp);
+                } catch (Exception e) {
+                    result[0] = null;
+                }
+            });
+            fetchThread.start();
+            long fetchStart = System.currentTimeMillis();
+            while (fetchThread.isAlive()) {
+                if (stopped) {
+                    fetchThread.interrupt();
+                    return;
+                }
+                long elapsed = (System.currentTimeMillis() - fetchStart) / 1000;
+                progress(cb, "Fetching metadata… (" + elapsed + "s)", 1,
+                        "asking peers & trackers");
+                try {
+                    fetchThread.join(2000);
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+            byte[] torrentBytes = result[0];
             if (stopped) return;
             if (torrentBytes == null || torrentBytes.length == 0) {
                 cb.onError("No peers answered for this torrent");
