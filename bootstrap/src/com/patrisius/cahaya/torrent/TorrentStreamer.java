@@ -55,11 +55,13 @@ public class TorrentStreamer {
 
     public synchronized void start(Context ctx, String magnetUri, int fileIdx,
                                    Callback cb) {
-        stop();
+        // Stop any previous torrent first — otherwise orphaned sessions
+        // keep downloading in the background and split the bandwidth.
+        stopActive();
+        stopped = false;
         synchronized (TorrentStreamer.class) {
             active = this;
         }
-        stopped = false;
         Context app = ctx.getApplicationContext();
         worker = new Thread(() -> run(app, magnetUri, fileIdx, cb),
                 "torrent-streamer");
