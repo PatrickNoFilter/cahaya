@@ -82,4 +82,11 @@ public class MPVLib {
     public static void event(int eventId) {
         if (observer != null) observer.event(eventId);
     }
+
+    // Called from native code for logging
+    @SuppressWarnings("unused")
+    public static void logMessage(String prefix, int level, String text) {
+        // Log to Android logcat; level is mpv log level
+        android.util.Log.d("mpv", prefix + ": " + text);
+    }
 }
