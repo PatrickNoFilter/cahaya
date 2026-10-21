@@ -207,6 +207,8 @@ public class AddonManager {
                                     if (t.isEmpty()) {
                                         t = name.isEmpty() ? "Stream" : name;
                                     }
+                                    int seeders = parseSeeders(t);
+                                    String size = parseSize(t);
                                     // Stremio titles are often "filename\nsize ▲"; first line is enough
                                     int nl = t.indexOf('\n');
                                     if (nl > 0) {
@@ -222,7 +224,10 @@ public class AddonManager {
                                             t = "[" + qual + "] " + t;
                                         }
                                     }
-                                    out.add(new StreamItem(u, t, baseUrl, fileIdx));
+                                    StreamItem item = new StreamItem(u, t, baseUrl, fileIdx);
+                                    item.seeders = seeders;
+                                    item.size = size;
+                                    out.add(item);
                                 }
                             }
                             cb.onResult(out);
@@ -282,6 +287,32 @@ public class AddonManager {
                         }
                     }
                 });
+    }
+
+    /** Torrentio titles carry "👤 186 💾 6.91 GB" on the 2nd line. -1 if absent. */
+    private static int parseSeeders(String title) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("👤\\s*(\\d+)").matcher(title);
+            if (m.find()) {
+                return Integer.parseInt(m.group(1));
+            }
+        } catch (Exception ignored) {
+        }
+        return -1;
+    }
+
+    /** e.g. "6.91 GB" from "💾 6.91 GB". null if absent. */
+    private static String parseSize(String title) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("💾\\s*([\\d.]+\\s*[KMGT]B)").matcher(title);
+            if (m.find()) {
+                return m.group(1).trim();
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     /** Public trackers baked into every magnet: Torrentio entries often carry

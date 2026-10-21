@@ -229,6 +229,9 @@ public class DetailsActivity extends Activity {
                         Toast.LENGTH_LONG).show();
                 return;
             }
+            // Most seeders at top, like Nuvio; unknown counts last.
+            java.util.Collections.sort(all, (a, b) ->
+                    Integer.compare(b.seeders, a.seeders));
             showStreamPicker(title, videoId, all);
         };
 
@@ -270,8 +273,21 @@ public class DetailsActivity extends Activity {
         String[] labels = new String[streams.size()];
         for (int i = 0; i < streams.size(); i++) {
             StreamItem s = streams.get(i);
-            labels[i] = s.title + "\n" + hostOf(s.source)
-                    + (s.isTorrent() ? " · torrent" : "");
+            String sub = hostOf(s.source);
+            if (s.isTorrent()) {
+                StringBuilder sb = new StringBuilder();
+                if (s.seeders >= 0) {
+                    sb.append("👤 ").append(s.seeders).append(" seeders");
+                }
+                if (s.size != null) {
+                    if (sb.length() > 0) sb.append(" · ");
+                    sb.append(s.size);
+                }
+                if (sb.length() > 0) sb.append(" · ");
+                sb.append(sub);
+                sub = sb.toString();
+            }
+            labels[i] = s.title + "\n" + sub;
         }
         new AlertDialog.Builder(this)
                 .setTitle("Choose stream")
