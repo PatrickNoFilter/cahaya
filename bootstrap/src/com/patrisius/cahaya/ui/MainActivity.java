@@ -1,6 +1,8 @@
 package com.patrisius.cahaya.ui;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -27,6 +29,8 @@ import android.widget.Toast;
 import com.patrisius.cahaya.CahayaApp;
 import com.patrisius.cahaya.addon.AddonManager;
 import com.patrisius.cahaya.addon.CatalogItem;
+import com.patrisius.cahaya.plugin.Plugin;
+import com.patrisius.cahaya.plugin.PluginManager;
 
 import org.json.JSONObject;
 
@@ -46,7 +50,7 @@ import java.util.concurrent.Executors;
  */
 public class MainActivity extends Activity {
 
-    private static final String[] MENU = {"Home", "Search", "Library", "Addons", "Settings"};
+    private static final String[] MENU = {"Home", "Search", "Library", "Addons", "Plugins", "Settings"};
 
     private final ExecutorService imgIo = Executors.newFixedThreadPool(4);
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -63,6 +67,7 @@ public class MainActivity extends Activity {
     private boolean homeLoaded = false;
 
     private AddonManager mgr;
+    private PluginManager plugins;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -119,6 +124,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         mgr = ((CahayaApp) getApplication()).addons();
+        plugins = new PluginManager(this, mgr);
         mgr.ensureDefaults(new AddonManager.Callback<Boolean>() {
             @Override
             public void onResult(Boolean fresh) {
@@ -166,7 +172,8 @@ public class MainActivity extends Activity {
             case 1: screen = makeSearchScreen(); break;
             case 2: screen = makeLibraryScreen(); break;
             case 3: screen = makeAddonsScreen(); break;
-            case 4: screen = makeSettingsScreen(); break;
+            case 4: screen = makePluginsScreen(); break;
+            case 5: screen = makeSettingsScreen(); break;
             default: screen = makeHomeScreen(); break;
         }
         content.addView(screen, new FrameLayout.LayoutParams(
@@ -308,8 +315,12 @@ public class MainActivity extends Activity {
             v.setBackgroundColor(hasFocus ? Color.parseColor("#2A4A5A") : Color.TRANSPARENT);
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
         });
-        card.setOnClickListener(v -> Toast.makeText(MainActivity.this,
-                item.name + " — details in v0.3", Toast.LENGTH_SHORT).show());
+        card.setOnClickListener(v -> {
+            Intent i = new Intent(MainActivity.this, DetailsActivity.class);
+            i.putExtra("id", item.id);
+            i.putExtra("type", item.type);
+            startActivity(i);
+        });
 
         loadPoster(item.poster, poster);
         return card;
@@ -494,6 +505,147 @@ public class MainActivity extends Activity {
         return col;
     }
 
+    // ---------------- Plugins ----------------
+
+    private View makePluginsScreen() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+
+        TextView h = new TextView(this);
+        h.setText("Plugins");
+        h.setTextSize(28);
+        h.setTextColor(Color.WHITE);
+        h.setPadding(0, 0, 0, dp(12));
+        col.addView(h);
+
+        TextView note = new TextView(this);
+        note.setText("Native plugins extend Cahaya with extra streams and subtitles.\n"
+                + "Click toggles a plugin · long-press removes it.");
+        note.setTextColor(Color.GRAY);
+        note.setPadding(0, 0, 0, dp(12));
+        col.addView(note);
+
+        final LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        col.addView(list);
+        refreshPluginList(list);
+
+        TextView install = new TextView(this);
+        install.setText("＋  Install from URL");
+        install.setTextSize(18);
+        install.setTextColor(Color.parseColor("#4FC3F7"));
+        install.setPadding(dp(16), dp(16), dp(16), dp(16));
+        install.setFocusable(true);
+        install.setClickable(true);
+        install.setOnFocusChangeListener((v, hasFocus) ->
+                v.setBackgroundColor(hasFocus
+                        ? Color.parseColor("#2A4A5A") : Color.TRANSPARENT));
+        install.setOnClickListener(v -> showInstallPluginDialog(list));
+        col.addView(install);
+        return col;
+    }
+
+    private void refreshPluginList(LinearLayout list) {
+        list.removeAllViews();
+        List<Plugin> all = plugins.plugins();
+        if (all.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("No plugins installed yet.");
+            empty.setTextColor(Color.GRAY);
+            empty.setPadding(dp(4), dp(8), dp(4), dp(8));
+            list.addView(empty);
+            return;
+        }
+        for (final Plugin p : all) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(16), dp(12), dp(16), dp(12));
+            row.setBackgroundColor(Color.parseColor("#1E2126"));
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            rlp.setMargins(0, 0, 0, dp(10));
+            row.setLayoutParams(rlp);
+            row.setFocusable(true);
+            row.setClickable(true);
+            row.setOnFocusChangeListener((v, hasFocus) ->
+                    v.setBackgroundColor(hasFocus
+                            ? Color.parseColor("#2A4A5A") : Color.parseColor("#1E2126")));
+
+            final TextView name = new TextView(this);
+            name.setTextSize(18);
+            row.addView(name);
+
+            TextView sub = new TextView(this);
+            sub.setText(p.baseUrl);
+            sub.setTextColor(Color.GRAY);
+            row.addView(sub);
+
+            final Runnable paint = () -> {
+                name.setText((p.enabled ? "● " : "○ ") + p.name + "  ·  v" + p.version);
+                name.setTextColor(p.enabled ? Color.WHITE : Color.GRAY);
+            };
+            paint.run();
+            row.setTag(p);
+
+            row.setOnClickListener(v -> {
+                Plugin pl = (Plugin) v.getTag();
+                plugins.setEnabled(pl.baseUrl, !pl.enabled);
+                pl.enabled = !pl.enabled;
+                paint.run();
+                Toast.makeText(MainActivity.this,
+                        pl.name + (pl.enabled ? " enabled" : " disabled"),
+                        Toast.LENGTH_SHORT).show();
+            });
+            row.setOnLongClickListener(v -> {
+                Plugin pl = (Plugin) v.getTag();
+                plugins.remove(pl.baseUrl);
+                refreshPluginList(list);
+                Toast.makeText(MainActivity.this,
+                        pl.name + " removed", Toast.LENGTH_SHORT).show();
+                return true;
+            });
+            list.addView(row);
+        }
+    }
+
+    private void showInstallPluginDialog(final LinearLayout list) {
+        final EditText input = new EditText(this);
+        input.setHint("https://example.com/my-plugin");
+        input.setHintTextColor(Color.GRAY);
+        input.setTextColor(Color.WHITE);
+        input.setSingleLine(true);
+        new AlertDialog.Builder(this)
+                .setTitle("Install plugin")
+                .setMessage("Paste the plugin base URL (serves plugin.json):")
+                .setView(input)
+                .setPositiveButton("Install", (d, which) -> {
+                    final String baseUrl = input.getText().toString().trim();
+                    if (baseUrl.isEmpty()) {
+                        return;
+                    }
+                    Toast.makeText(MainActivity.this,
+                            "Fetching plugin manifest…", Toast.LENGTH_SHORT).show();
+                    plugins.install(baseUrl, new PluginManager.Callback<Plugin>() {
+                        @Override
+                        public void onResult(Plugin p) {
+                            refreshPluginList(list);
+                            Toast.makeText(MainActivity.this,
+                                    "Installed: " + p.name, Toast.LENGTH_SHORT).show();
+                        }
+
+                        @Override
+                        public void onError(Exception e) {
+                            Toast.makeText(MainActivity.this,
+                                    "Install failed: " + e.getMessage(),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     // ---------------- Settings ----------------
 
     private View makeSettingsScreen() {
@@ -507,8 +659,9 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.2.0 (build 2)");
+        addSettingRow(col, "Version", "0.3.0 (build 3)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
+        addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
         addSettingRow(col, "Player", "System player — coming in v0.3");
         return col;

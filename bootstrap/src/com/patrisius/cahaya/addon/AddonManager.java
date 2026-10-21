@@ -28,6 +28,8 @@ public class AddonManager {
 
     /** Default addon installed on first run. */
     public static final String DEFAULT_ADDON = "https://v3-cinemeta.strem.io";
+    /** Default subtitle addon installed on first run (keyless community subs). */
+    public static final String SUBTITLES_DEFAULT = "https://subsource.strem.top";
 
     public interface Callback<T> {
         void onResult(T result);
@@ -46,25 +48,182 @@ public class AddonManager {
         return prefs.getStringSet("urls", new HashSet<String>());
     }
 
-    /** Installs the default addon on first run (validates its manifest). */
+    /** Installs the default addons on first run (validates their manifests). */
     public void ensureDefaults(Callback<Boolean> cb) {
         io.execute(() -> {
             try {
                 Set<String> urls = new HashSet<>(addonUrls());
-                boolean fresh;
-                if (!urls.contains(DEFAULT_ADDON)) {
-                    fetchText(DEFAULT_ADDON + "/manifest.json"); // throws if dead
-                    urls.add(DEFAULT_ADDON);
-                    prefs.edit().putStringSet("urls", urls).apply();
-                    fresh = true;
-                } else {
-                    fresh = false;
+                boolean fresh = false;
+                for (String def : new String[]{DEFAULT_ADDON, SUBTITLES_DEFAULT}) {
+                    if (!urls.contains(def)) {
+                        fetchText(def + "/manifest.json"); // throws if dead
+                        urls.add(def);
+                        fresh = true;
+                    }
                 }
+                prefs.edit().putStringSet("urls", urls).apply();
                 post(cb, fresh, null);
             } catch (Exception e) {
                 post(cb, false, e);
             }
         });
+    }
+
+    /** Async raw GET, result on the main thread. 404 and friends -> onError. */
+    public void fetchTextAsync(final String url, final Callback<String> cb) {
+        io.execute(() -> {
+            try {
+                post(cb, fetchText(url), null);
+            } catch (Exception e) {
+                post(cb, null, e);
+            }
+        });
+    }
+
+    /** GET {base}/meta/{type}/{id}.json -> full details. */
+    public void meta(String baseUrl, String type, String id,
+                     Callback<MetaDetails> cb) {
+        fetchTextAsync(baseUrl + "/meta/" + type + "/" + id + ".json",
+                new Callback<String>() {
+                    @Override
+                    public void onResult(String body) {
+                        try {
+                            JSONObject m = new JSONObject(body).getJSONObject("meta");
+                            MetaDetails d = new MetaDetails();
+                            d.id = m.optString("id", id);
+                            d.type = m.optString("type", type);
+                            d.name = m.optString("name", "?");
+                            d.poster = m.optString("poster", null);
+                            d.background = m.optString("background", null);
+                            d.description = m.optString("description", "");
+                            d.releaseInfo = m.optString("releaseInfo",
+                                    m.optString("year", ""));
+                            JSONArray vids = m.optJSONArray("videos");
+                            if (vids != null) {
+                                for (int i = 0; i < vids.length(); i++) {
+                                    JSONObject v = vids.getJSONObject(i);
+                                    MetaDetails.VideoInfo vi = new MetaDetails.VideoInfo();
+                                    vi.id = v.optString("id", "");
+                                    if (vi.id.isEmpty()) {
+                                        continue;
+                                    }
+                                    vi.title = v.optString("title",
+                                            v.optString("name", "Episode " + v.optInt("episode", i + 1)));
+                                    vi.thumbnail = v.optString("thumbnail", null);
+                                    vi.season = v.optInt("season", 0);
+                                    vi.episode = v.optInt("episode", 0);
+                                    d.videos.add(vi);
+                                }
+                            }
+                            cb.onResult(d);
+                        } catch (Exception e) {
+                            cb.onError(e);
+                        }
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        cb.onError(e);
+                    }
+                });
+    }
+
+    /**
+     * GET {base}/stream/{type}/{videoId}.json -> playable streams.
+     * Addons without the resource answer 404 -> empty list (not an error),
+     * so aggregation across addons stays simple.
+     */
+    public void streams(String baseUrl, String type, String videoId,
+                        Callback<List<StreamItem>> cb) {
+        fetchTextAsync(baseUrl + "/stream/" + type + "/" + videoId + ".json",
+                new Callback<String>() {
+                    @Override
+                    public void onResult(String body) {
+                        try {
+                            List<StreamItem> out = new ArrayList<>();
+                            JSONArray arr = new JSONObject(body).optJSONArray("streams");
+                            if (arr != null) {
+                                for (int i = 0; i < arr.length(); i++) {
+                                    JSONObject s = arr.getJSONObject(i);
+                                    String u = s.optString("url", "");
+                                    if (u.isEmpty()) {
+                                        continue;
+                                    }
+                                    String t = s.optString("title",
+                                            s.optString("name", "Stream"));
+                                    // Stremio titles are often "filename\nsize ▲"; first line is enough
+                                    int nl = t.indexOf('\n');
+                                    if (nl > 0) {
+                                        t = t.substring(0, nl);
+                                    }
+                                    out.add(new StreamItem(u, t, baseUrl));
+                                }
+                            }
+                            cb.onResult(out);
+                        } catch (Exception e) {
+                            cb.onError(e);
+                        }
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        if (e.getMessage() != null && e.getMessage().contains("HTTP 404")) {
+                            cb.onResult(new ArrayList<StreamItem>());
+                        } else {
+                            cb.onError(e);
+                        }
+                    }
+                });
+    }
+
+    /**
+     * GET {base}/subtitles/{type}/{videoId}.json -> subtitle files.
+     * 404 -> empty list (addon has no subs for this title).
+     */
+    public void subtitles(String baseUrl, String type, String videoId,
+                          Callback<List<SubtitleItem>> cb) {
+        fetchTextAsync(baseUrl + "/subtitles/" + type + "/" + videoId + ".json",
+                new Callback<String>() {
+                    @Override
+                    public void onResult(String body) {
+                        try {
+                            List<SubtitleItem> out = new ArrayList<>();
+                            JSONArray arr = new JSONObject(body).optJSONArray("subtitles");
+                            if (arr != null) {
+                                for (int i = 0; i < arr.length(); i++) {
+                                    JSONObject s = arr.getJSONObject(i);
+                                    String u = s.optString("url", "");
+                                    if (u.isEmpty()) {
+                                        continue;
+                                    }
+                                    String lang = s.optString("lang", "?");
+                                    out.add(new SubtitleItem(u, lang,
+                                            lang + " · " + hostOf(baseUrl)));
+                                }
+                            }
+                            cb.onResult(out);
+                        } catch (Exception e) {
+                            cb.onError(e);
+                        }
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        if (e.getMessage() != null && e.getMessage().contains("HTTP 404")) {
+                            cb.onResult(new ArrayList<SubtitleItem>());
+                        } else {
+                            cb.onError(e);
+                        }
+                    }
+                });
+    }
+
+    private static String hostOf(String url) {
+        try {
+            return new URL(url).getHost();
+        } catch (Exception e) {
+            return url;
+        }
     }
 
     /** GET {base}/catalog/{type}/{id}.json -> items. */
