@@ -134,6 +134,9 @@ public class PlayerActivity extends Activity {
 
         setContentView(root);
 
+        // Route volume keys to the music stream (what ExoPlayer uses).
+        setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
+
         // Build the player now (no need to wait for surface).
         initPlayer();
         fetchSubtitles();
@@ -389,6 +392,11 @@ public class PlayerActivity extends Activity {
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (player == null) return super.onKeyDown(keyCode, event);
         switch (keyCode) {
+            case KeyEvent.KEYCODE_VOLUME_UP:
+            case KeyEvent.KEYCODE_VOLUME_DOWN:
+            case KeyEvent.KEYCODE_VOLUME_MUTE:
+                // Let the system handle volume.
+                return super.onKeyDown(keyCode, event);
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
                 if (controller.getVisibility() == View.VISIBLE) {

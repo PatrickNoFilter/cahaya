@@ -190,7 +190,9 @@ public class TorrentStreamer {
                     }
                 }
                 long done = downloadedContiguous();
-                int pct = targetSize > 0 ? (int) (done * 100 / targetSize) : 0;
+                // Percent is progress toward the ready threshold (what the user
+                // waits for), not the whole file.
+                int pct = need > 0 ? (int) Math.min(100, done * 100 / need) : 0;
                 long now = System.currentTimeMillis();
                 if (now - lastReport > 1500) {
                     lastReport = now;
