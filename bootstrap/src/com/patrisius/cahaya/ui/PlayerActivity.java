@@ -486,15 +486,22 @@ public class PlayerActivity extends Activity {
     }
 
     /**
-     * Downmixes 5.1 audio to stereo in software using Media3's built-in
-     * ITU-style mixing matrix. For non-5.1 input the processor passes
-     * audio through untouched.
+     * Downmixes 5.1 audio to stereo in software using ITU-style coefficients.
+     * (Media3's built-in create(6,2) is not implemented, so we supply the
+     * matrix manually. 5.1 order: L,R,C,LFE,Ls,Rs.)
      */
     private static androidx.media3.common.audio.AudioProcessor createStereoDownmix() {
         androidx.media3.common.audio.ChannelMixingAudioProcessor p =
                 new androidx.media3.common.audio.ChannelMixingAudioProcessor();
+        float c = 0.7071f; // -3dB for centre and surrounds
+        float[] coeffs = new float[]{
+                // Left out:  L,   R,   C, LFE,  Ls,  Rs
+                1.0f, 0.0f, c, 0.0f, c, 0.0f,
+                // Right out: L,   R,   C, LFE,  Ls,  Rs
+                0.0f, 1.0f, c, 0.0f, 0.0f, c,
+        };
         p.putChannelMixingMatrix(
-                androidx.media3.common.audio.ChannelMixingMatrix.create(6, 2));
+                new androidx.media3.common.audio.ChannelMixingMatrix(6, 2, coeffs));
         return p;
     }
 }
