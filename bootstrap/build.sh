@@ -45,11 +45,12 @@ $BT/aapt2 link -o "$B/base.apk" -I "$AJAR" \
 echo "== javac =="
 find "$ROOT/src" "$B/gen" -name '*.java' > "$B/sources.txt"
 echo "  $(wc -l < "$B/sources.txt") source files"
-"$JDK/javac" --release 17 -encoding UTF-8 -nowarn -cp "$AJAR:$LTJAR" -d "$B/classes" @"$B/sources.txt"
+M3JARS=$(ls "$ROOT/libs/media3/"*.jar 2>/dev/null | tr '\n' ':')
+"$JDK/javac" --release 17 -encoding UTF-8 -nowarn -cp "$AJAR:$LTJAR:$M3JARS" -d "$B/classes" @"$B/sources.txt"
 
 echo "== d8 =="
 "$BT/d8" --lib "$AJAR" --min-api 26 --output "$B/dex" \
-    $(find "$B/classes" -name '*.class') "$LTJAR"
+    $(find "$B/classes" -name '*.class') "$LTJAR" "$ROOT/libs/media3/"*.jar
 ls "$B/dex"
 
 echo "== add dex + native libs =="
