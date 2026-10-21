@@ -389,6 +389,48 @@ public class MainActivity extends Activity {
         return col;
     }
 
+    /** TV-friendly dialog: paste any Stremio addon manifest URL to install it. */
+    private void showInstallUrlDialog() {
+        final EditText input = new EditText(this);
+        input.setHint("https://…");
+        input.setInputType(EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_VARIATION_URI);
+        input.setSingleLine(true);
+        input.setTextColor(Color.WHITE);
+        input.setHintTextColor(Color.GRAY);
+        int pad = dp(16);
+        input.setPadding(pad, pad, pad, pad);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Install addon from URL")
+                .setMessage("Paste the addon's base URL (its manifest.json is fetched to verify it).")
+                .setView(input)
+                .setPositiveButton("Install", (d, which) -> {
+                    String url = input.getText().toString().trim();
+                    if (url.isEmpty()) {
+                        return;
+                    }
+                    Toast.makeText(MainActivity.this,
+                            "Installing…", Toast.LENGTH_SHORT).show();
+                    mgr.installAddon(url, new AddonManager.Callback<String>() {
+                        @Override
+                        public void onResult(String addonName) {
+                            Toast.makeText(MainActivity.this,
+                                    "Installed: " + addonName, Toast.LENGTH_SHORT).show();
+                            selectMenu(3, false);
+                        }
+
+                        @Override
+                        public void onError(Exception e) {
+                            Toast.makeText(MainActivity.this,
+                                    "Install failed: " + e.getMessage(),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private View makeCard(final CatalogItem item) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -605,11 +647,34 @@ public class MainActivity extends Activity {
             });
         }
 
-        TextView foot = new TextView(this);
-        foot.setText("Install from URL — coming in a later version.");
-        foot.setTextColor(Color.GRAY);
-        foot.setPadding(0, dp(8), 0, 0);
-        col.addView(foot);
+        LinearLayout urlRow = new LinearLayout(this);
+        urlRow.setOrientation(LinearLayout.VERTICAL);
+        urlRow.setPadding(dp(16), dp(12), dp(16), dp(12));
+        urlRow.setBackgroundColor(Color.parseColor("#1E2126"));
+        LinearLayout.LayoutParams urlLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        urlLp.setMargins(0, 0, 0, dp(10));
+        urlRow.setLayoutParams(urlLp);
+        urlRow.setFocusable(true);
+        urlRow.setClickable(true);
+        urlRow.setOnFocusChangeListener((v, hasFocus) ->
+                v.setBackgroundColor(hasFocus
+                        ? Color.parseColor("#2A4A5A") : Color.parseColor("#1E2126")));
+
+        TextView urlName = new TextView(this);
+        urlName.setText("＋ Install from URL");
+        urlName.setTextSize(18);
+        urlName.setTextColor(Color.parseColor("#4FC3F7"));
+        urlRow.addView(urlName);
+
+        TextView urlSub = new TextView(this);
+        urlSub.setText("Paste your configured addon URL, e.g. MediaFusion");
+        urlSub.setTextColor(Color.GRAY);
+        urlRow.addView(urlSub);
+
+        urlRow.setOnClickListener(v -> showInstallUrlDialog());
+        col.addView(urlRow);
 
         TextView sh = new TextView(this);
         sh.setText("Suggested");
@@ -827,7 +892,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.5.0 (build 6)");
+        addSettingRow(col, "Version", "0.6.0 (build 7)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
@@ -872,7 +937,7 @@ public class MainActivity extends Activity {
                 HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
                 c.setConnectTimeout(15000);
                 c.setReadTimeout(30000);
-                c.setRequestProperty("User-Agent", "Cahaya/0.5.0 (Android TV)");
+                c.setRequestProperty("User-Agent", "Cahaya/0.6.0 (Android TV)");
                 InputStream in = c.getInputStream();
                 final Bitmap bmp = BitmapFactory.decodeStream(in);
                 in.close();
