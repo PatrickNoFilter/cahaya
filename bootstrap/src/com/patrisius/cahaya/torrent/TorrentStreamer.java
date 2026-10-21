@@ -177,7 +177,18 @@ public class TorrentStreamer {
             long need = Math.min(READY_BYTES, targetSize);
             boolean ready = false;
             long lastReport = 0;
+            long lastFlush = 0;
             while (!stopped) {
+                // Flush libtorrent's memory cache to disk so the HTTP server
+                // (which reads the file) sees the same bytes havePiece reports.
+                long now0 = System.currentTimeMillis();
+                if (now0 - lastFlush > 2000) {
+                    lastFlush = now0;
+                    try {
+                        h.flushCache();
+                    } catch (Exception ignored) {
+                    }
+                }
                 long done = downloadedContiguous();
                 int pct = targetSize > 0 ? (int) (done * 100 / targetSize) : 0;
                 long now = System.currentTimeMillis();
@@ -194,8 +205,13 @@ public class TorrentStreamer {
                     progress(cb, ready ? "Downloading…" : "Buffering…", pct, detail);
                 }
                 if (!ready && done >= need) {
-                    ready = true;
-                    cb.onReady(httpUrl, fileName);
+                    // Verify the file header is valid before launching the player.
+                    // If the first bytes aren't the MKV/MP4 magic, the data isn't
+                    // actually on disk yet (flush issue) — wait for it.
+                    if (hasValidHeader(targetFile)) {
+                        ready = true;
+                        cb.onReady(httpUrl, fileName);
+                    }
                 }
                 if (targetSize > 0 && done >= targetSize) break;
                 sleep(1000);
@@ -222,6 +238,23 @@ public class TorrentStreamer {
             return Math.min((long) n * pieceLen, targetSize);
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    /** Check if the file starts with a valid video container header. */
+    private boolean hasValidHeader(java.io.File f) {
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "r")) {
+            byte[] magic = new byte[4];
+            if (raf.read(magic) != 4) return false;
+            // MKV: 1A 45 DF A3, MP4: ....ftyp, AVI: RIFF
+            boolean mkv = (magic[0] == 0x1A && magic[1] == 0x45
+                    && magic[2] == (byte) 0xDF && magic[3] == (byte) 0xA3);
+            boolean mp4 = (magic[0] == 0x00 && magic[1] == 0x00);
+            boolean avi = (magic[0] == 'R' && magic[1] == 'I'
+                    && magic[2] == 'F' && magic[3] == 'F');
+            return mkv || mp4 || avi;
+        } catch (Exception e) {
+            return false;
         }
     }
 
