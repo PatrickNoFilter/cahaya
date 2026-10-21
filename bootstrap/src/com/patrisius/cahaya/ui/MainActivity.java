@@ -8,10 +8,15 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.LruCache;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -23,25 +28,41 @@ import com.patrisius.cahaya.CahayaApp;
 import com.patrisius.cahaya.addon.AddonManager;
 import com.patrisius.cahaya.addon.CatalogItem;
 
+import org.json.JSONObject;
+
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * v0.1 bootstrap home screen: D-pad navigable rows built with framework
- * views (no Leanback dependency). Shows real catalog rows from the
- * installed Stremio-protocol addon. Card click -> details (v0.2).
+ * v0.2 bootstrap: Nuvio-style left sidebar navigation (Home, Search,
+ * Library, Addons, Settings) with a content pane on the right. All views
+ * are framework widgets (no Leanback dependency); D-pad navigates with
+ * left/right between sidebar and content.
  */
 public class MainActivity extends Activity {
+
+    private static final String[] MENU = {"Home", "Search", "Library", "Addons", "Settings"};
 
     private final ExecutorService imgIo = Executors.newFixedThreadPool(4);
     private final Handler main = new Handler(Looper.getMainLooper());
     private LruCache<String, Bitmap> memCache;
-    private LinearLayout rowsBox;
-    private TextView statusView;
+
+    private LinearLayout sidebar;
+    private FrameLayout content;
+    private final List<TextView> menuViews = new ArrayList<>();
+    private int selected = 0;
+
+    private LinearLayout homeRows;
+    private TextView homeStatus;
+    private final List<CatalogItem> allItems = new ArrayList<>();
+    private boolean homeLoaded = false;
+
+    private AddonManager mgr;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -59,71 +80,175 @@ public class MainActivity extends Activity {
             }
         };
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
         LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(28);
-        root.setPadding(pad, pad, pad, pad);
+        root.setOrientation(LinearLayout.HORIZONTAL);
 
-        TextView title = new TextView(this);
-        title.setText("Cahaya");
-        title.setTextSize(42);
-        title.setTextColor(Color.parseColor("#4FC3F7"));
-        title.setPadding(0, 0, 0, dp(4));
-        root.addView(title);
+        sidebar = new LinearLayout(this);
+        sidebar.setOrientation(LinearLayout.VERTICAL);
+        sidebar.setBackgroundColor(Color.parseColor("#1B1E23"));
+        int sideW = dp(230);
+        root.addView(sidebar, new LinearLayout.LayoutParams(
+                sideW, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText("v0.1 bootstrap");
-        subtitle.setTextColor(Color.GRAY);
-        subtitle.setPadding(0, 0, 0, dp(8));
-        root.addView(subtitle);
+        TextView brand = new TextView(this);
+        brand.setText("Cahaya");
+        brand.setTextSize(30);
+        brand.setTextColor(Color.parseColor("#4FC3F7"));
+        brand.setPadding(dp(20), dp(28), dp(20), dp(20));
+        sidebar.addView(brand);
 
-        statusView = new TextView(this);
-        statusView.setText("Loading catalogs…");
-        statusView.setTextColor(Color.GRAY);
-        root.addView(statusView);
+        for (int i = 0; i < MENU.length; i++) {
+            final int idx = i;
+            TextView item = new TextView(this);
+            item.setText(MENU[i]);
+            item.setTextSize(18);
+            item.setPadding(dp(20), dp(14), dp(20), dp(14));
+            item.setFocusable(true);
+            item.setClickable(true);
+            item.setOnClickListener(v -> selectMenu(idx, true));
+            item.setOnFocusChangeListener((v, hasFocus) -> paintMenuItem(item, idx, hasFocus));
+            sidebar.addView(item);
+            menuViews.add(item);
+        }
 
-        rowsBox = new LinearLayout(this);
-        rowsBox.setOrientation(LinearLayout.VERTICAL);
-        root.addView(rowsBox);
+        content = new FrameLayout(this);
+        content.setPadding(dp(28), dp(28), dp(28), dp(28));
+        root.addView(content, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        scroll.addView(root, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        setContentView(scroll);
+        setContentView(root);
 
-        AddonManager mgr = ((CahayaApp) getApplication()).addons();
+        mgr = ((CahayaApp) getApplication()).addons();
         mgr.ensureDefaults(new AddonManager.Callback<Boolean>() {
             @Override
             public void onResult(Boolean fresh) {
-                loadRows(mgr);
+                selectMenu(0, false);
+                menuViews.get(0).requestFocus();
             }
 
             @Override
             public void onError(Exception e) {
-                statusView.setText("Offline — couldn't reach addon: " + e.getMessage());
+                selectMenu(0, false);
+                if (homeStatus != null) {
+                    homeStatus.setText("Offline — couldn't reach addon: " + e.getMessage());
+                }
             }
         });
     }
 
-    private void loadRows(AddonManager mgr) {
-        loadRow(mgr, "movie", "top", "Popular Movies");
-        loadRow(mgr, "series", "top", "Popular Series");
+    private void paintMenuItem(TextView item, int idx, boolean focused) {
+        boolean isSel = idx == selected;
+        if (isSel) {
+            item.setBackgroundColor(focused
+                    ? Color.parseColor("#35617A") : Color.parseColor("#2A4A5A"));
+            item.setTextColor(Color.WHITE);
+        } else {
+            item.setBackgroundColor(focused
+                    ? Color.parseColor("#26292F") : Color.TRANSPARENT);
+            item.setTextColor(focused ? Color.WHITE : Color.parseColor("#9AA0A6"));
+        }
+        item.setScaleX(focused ? 1.04f : 1.0f);
+        item.setScaleY(focused ? 1.04f : 1.0f);
     }
 
-    private void loadRow(AddonManager mgr, String type, String id, String header) {
+    private void refreshMenuPaint() {
+        for (int i = 0; i < menuViews.size(); i++) {
+            paintMenuItem(menuViews.get(i), i, menuViews.get(i).isFocused());
+        }
+    }
+
+    private void selectMenu(int idx, boolean moveFocus) {
+        selected = idx;
+        refreshMenuPaint();
+        content.removeAllViews();
+        View screen;
+        switch (idx) {
+            case 1: screen = makeSearchScreen(); break;
+            case 2: screen = makeLibraryScreen(); break;
+            case 3: screen = makeAddonsScreen(); break;
+            case 4: screen = makeSettingsScreen(); break;
+            default: screen = makeHomeScreen(); break;
+        }
+        content.addView(screen, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        if (moveFocus) {
+            View f = screen.findFocus();
+            if (f == null) {
+                f = firstFocusable(screen);
+            }
+            if (f != null) {
+                f.requestFocus();
+            }
+        }
+    }
+
+    private View firstFocusable(View v) {
+        if (v.isFocusable()) {
+            return v;
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                View f = firstFocusable(g.getChildAt(i));
+                if (f != null) {
+                    return f;
+                }
+            }
+        }
+        return null;
+    }
+
+    // ---------------- Home ----------------
+
+    private View makeHomeScreen() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+
+        homeStatus = new TextView(this);
+        homeStatus.setText("Loading catalogs…");
+        homeStatus.setTextColor(Color.GRAY);
+        col.addView(homeStatus);
+
+        homeRows = new LinearLayout(this);
+        homeRows.setOrientation(LinearLayout.VERTICAL);
+        col.addView(homeRows);
+
+        scroll.addView(col, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        if (!homeLoaded) {
+            homeLoaded = true;
+            loadRow("movie", "top", "Popular Movies");
+            loadRow("series", "top", "Popular Series");
+        } else if (!allItems.isEmpty()) {
+            homeStatus.setVisibility(View.GONE);
+        }
+        return scroll;
+    }
+
+    private void loadRow(String type, String id, String header) {
         mgr.catalog(AddonManager.DEFAULT_ADDON, type, id,
                 new AddonManager.Callback<List<CatalogItem>>() {
                     @Override
                     public void onResult(List<CatalogItem> items) {
-                        statusView.setVisibility(View.GONE);
-                        rowsBox.addView(makeRow(header, items));
+                        allItems.addAll(items);
+                        if (homeStatus != null) {
+                            homeStatus.setVisibility(View.GONE);
+                        }
+                        if (homeRows != null) {
+                            homeRows.addView(makeRow(header, items));
+                        }
                     }
 
                     @Override
                     public void onError(Exception e) {
-                        statusView.setText("Couldn't load " + header + ": " + e.getMessage());
+                        if (homeStatus != null) {
+                            homeStatus.setText("Couldn't load " + header + ": " + e.getMessage());
+                        }
                     }
                 });
     }
@@ -131,7 +256,7 @@ public class MainActivity extends Activity {
     private View makeRow(String header, List<CatalogItem> items) {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(0, dp(14), 0, dp(14));
+        col.setPadding(0, dp(6), 0, dp(14));
 
         TextView h = new TextView(this);
         h.setText(header);
@@ -184,11 +309,232 @@ public class MainActivity extends Activity {
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
         });
         card.setOnClickListener(v -> Toast.makeText(MainActivity.this,
-                item.name + " — details in v0.2", Toast.LENGTH_SHORT).show());
+                item.name + " — details in v0.3", Toast.LENGTH_SHORT).show());
 
         loadPoster(item.poster, poster);
         return card;
     }
+
+    // ---------------- Search ----------------
+
+    private View makeSearchScreen() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+
+        TextView h = new TextView(this);
+        h.setText("Search");
+        h.setTextSize(28);
+        h.setTextColor(Color.WHITE);
+        h.setPadding(0, 0, 0, dp(12));
+        col.addView(h);
+
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+
+        final EditText input = new EditText(this);
+        input.setHint("Search loaded titles…");
+        input.setHintTextColor(Color.GRAY);
+        input.setTextColor(Color.WHITE);
+        input.setSingleLine(true);
+        input.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        input.setFocusable(true);
+        input.setFocusableInTouchMode(true);
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        ilp.setMargins(0, 0, dp(12), 0);
+        bar.addView(input, ilp);
+
+        Button go = new Button(this);
+        go.setText("Search");
+        go.setFocusable(true);
+        bar.addView(go);
+        col.addView(bar);
+
+        TextView note = new TextView(this);
+        note.setText("Searches titles already loaded on Home. Full cross-addon search in v0.3.");
+        note.setTextColor(Color.GRAY);
+        note.setPadding(0, dp(8), 0, dp(8));
+        col.addView(note);
+
+        final LinearLayout results = new LinearLayout(this);
+        results.setOrientation(LinearLayout.VERTICAL);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(results);
+        col.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        Runnable doSearch = () -> {
+            String q = input.getText().toString().trim().toLowerCase();
+            results.removeAllViews();
+            if (q.isEmpty()) {
+                return;
+            }
+            List<CatalogItem> hits = new ArrayList<>();
+            for (CatalogItem it : allItems) {
+                if (it.name.toLowerCase().contains(q)) {
+                    hits.add(it);
+                }
+            }
+            if (hits.isEmpty()) {
+                TextView empty = new TextView(this);
+                empty.setText("No matches for \"" + q + "\" in loaded titles.");
+                empty.setTextColor(Color.GRAY);
+                results.addView(empty);
+            } else {
+                results.addView(makeRow(hits.size() + " result(s)", hits));
+                View f = firstFocusable(results);
+                if (f != null) {
+                    f.requestFocus();
+                }
+            }
+        };
+        go.setOnClickListener(v -> doSearch.run());
+        input.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH
+                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                doSearch.run();
+                return true;
+            }
+            return false;
+        });
+        return col;
+    }
+
+    // ---------------- Library ----------------
+
+    private View makeLibraryScreen() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(0, dp(60), 0, 0);
+
+        TextView h = new TextView(this);
+        h.setText("Library");
+        h.setTextSize(28);
+        h.setTextColor(Color.WHITE);
+        h.setPadding(0, 0, 0, dp(12));
+        col.addView(h);
+
+        TextView empty = new TextView(this);
+        empty.setText("Your library is empty.\n\nSave titles here from the details screen (v0.3).");
+        empty.setTextColor(Color.GRAY);
+        empty.setTextSize(16);
+        col.addView(empty);
+        return col;
+    }
+
+    // ---------------- Addons ----------------
+
+    private View makeAddonsScreen() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+
+        TextView h = new TextView(this);
+        h.setText("Addons");
+        h.setTextSize(28);
+        h.setTextColor(Color.WHITE);
+        h.setPadding(0, 0, 0, dp(12));
+        col.addView(h);
+
+        final LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        col.addView(list);
+
+        for (String url : mgr.addonUrls()) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(16), dp(12), dp(16), dp(12));
+            row.setBackgroundColor(Color.parseColor("#1E2126"));
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            rlp.setMargins(0, 0, 0, dp(10));
+            row.setLayoutParams(rlp);
+            row.setFocusable(true);
+            row.setClickable(true);
+            row.setOnFocusChangeListener((v, hasFocus) ->
+                    v.setBackgroundColor(hasFocus
+                            ? Color.parseColor("#2A4A5A") : Color.parseColor("#1E2126")));
+
+            final TextView name = new TextView(this);
+            name.setText("Loading…");
+            name.setTextSize(18);
+            name.setTextColor(Color.WHITE);
+            row.addView(name);
+
+            TextView sub = new TextView(this);
+            sub.setText(url);
+            sub.setTextColor(Color.GRAY);
+            row.addView(sub);
+
+            final String base = url;
+            row.setOnClickListener(v -> Toast.makeText(MainActivity.this,
+                    base + " — configure in v0.3", Toast.LENGTH_SHORT).show());
+            list.addView(row);
+
+            imgIo.execute(() -> {
+                String label = base;
+                try {
+                    String body = AddonManager.fetchText(base + "/manifest.json");
+                    JSONObject m = new JSONObject(body);
+                    label = m.optString("name", base)
+                            + "  ·  v" + m.optString("version", "?");
+                } catch (Exception ignored) {
+                    // keep the URL as label
+                }
+                final String done = label;
+                main.post(() -> name.setText(done));
+            });
+        }
+
+        TextView foot = new TextView(this);
+        foot.setText("Install from URL — coming in v0.3.");
+        foot.setTextColor(Color.GRAY);
+        foot.setPadding(0, dp(8), 0, 0);
+        col.addView(foot);
+        return col;
+    }
+
+    // ---------------- Settings ----------------
+
+    private View makeSettingsScreen() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+
+        TextView h = new TextView(this);
+        h.setText("Settings");
+        h.setTextSize(28);
+        h.setTextColor(Color.WHITE);
+        h.setPadding(0, 0, 0, dp(12));
+        col.addView(h);
+
+        addSettingRow(col, "Version", "0.2.0 (build 2)");
+        addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
+        addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
+        addSettingRow(col, "Player", "System player — coming in v0.3");
+        return col;
+    }
+
+    private void addSettingRow(LinearLayout col, String label, String value) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(dp(4), dp(10), dp(4), dp(10));
+
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextColor(Color.GRAY);
+        l.setTextSize(16);
+        row.addView(l, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextColor(Color.WHITE);
+        v.setTextSize(16);
+        row.addView(v);
+        col.addView(row);
+    }
+
+    // ---------------- posters ----------------
 
     private void loadPoster(String url, ImageView into) {
         if (url == null || url.isEmpty()) {
@@ -205,7 +551,7 @@ public class MainActivity extends Activity {
                 HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
                 c.setConnectTimeout(15000);
                 c.setReadTimeout(30000);
-                c.setRequestProperty("User-Agent", "Cahaya/0.1.0 (Android TV)");
+                c.setRequestProperty("User-Agent", "Cahaya/0.2.0 (Android TV)");
                 InputStream in = c.getInputStream();
                 final Bitmap bmp = BitmapFactory.decodeStream(in);
                 in.close();
