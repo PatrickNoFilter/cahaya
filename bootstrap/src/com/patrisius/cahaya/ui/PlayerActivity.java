@@ -84,11 +84,22 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         surfaceView = new SurfaceView(this);
         surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override public void surfaceCreated(SurfaceHolder holder) {
-                MPVLib.attachSurface(holder.getSurface());
+                try {
+                    MPVLib.attachSurface(holder.getSurface());
+                    MPVLib.setOptionString("force-window", "yes");
+                    MPVLib.setOptionString("vo", "gpu");
+                } catch (Throwable ignored) {}
+                surfaceReady = true;
+                maybeStartPlayback();
             }
             @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int ht) {}
             @Override public void surfaceDestroyed(SurfaceHolder holder) {
-                MPVLib.detachSurface();
+                surfaceReady = false;
+                try {
+                    MPVLib.setPropertyString("vo", "null");
+                    MPVLib.setOptionString("force-window", "no");
+                    MPVLib.detachSurface();
+                } catch (Throwable ignored) {}
             }
         });
         root.addView(surfaceView, new FrameLayout.LayoutParams(
@@ -160,33 +171,56 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         initPlayer();
     }
 
+    private boolean mpvReady, surfaceReady, fileStarted;
+    private boolean wasPlayingOnPause;
+
     private void initPlayer() {
         try {
             MPVLib.create(this);
             MPVLib.setEventObserver(this);
 
-            // Hardware decoding, good defaults for TV
-            MPVLib.setOptionString("hwdec", "mediacodec");
-            MPVLib.setOptionString("vo", "gpu");
-            MPVLib.setOptionString("ao", "audiotrack");
+            // No VO yet: the surface arrives later via surfaceCreated().
+            // Starting with vo=gpu before a surface exists races VO init.
+            MPVLib.setOptionString("vo", "null");
+            MPVLib.setOptionString("force-window", "no");
+            MPVLib.setOptionString("gpu-context", "android");
+            MPVLib.setOptionString("opengl-es", "yes");
+            // mediacodec-copy falls back gracefully where zero-copy fails
+            MPVLib.setOptionString("hwdec", "mediacodec,mediacodec-copy");
+            MPVLib.setOptionString("ao", "audiotrack,opensles");
+            MPVLib.setOptionString("audio-channels", "stereo");
             MPVLib.setOptionString("cache", "yes");
             MPVLib.setOptionString("cache-secs", "10");
+            MPVLib.setOptionString("idle", "yes");
 
             MPVLib.init();
+            mpvReady = true;
 
-            // Load the stream
-            MPVLib.command(new String[]{"loadfile", streamUrl});
-
-            // Observe properties
-            MPVLib.observeProperty("time-pos", 0);
-            MPVLib.observeProperty("duration", 0);
-            MPVLib.observeProperty("pause", 0);
+            // Observe properties (3=FLAG for pause, 5=DOUBLE for time-pos/duration)
+            MPVLib.observeProperty("time-pos", 5);
+            MPVLib.observeProperty("duration", 5);
+            MPVLib.observeProperty("pause", 3);
 
             main.post(progressTick);
+            maybeStartPlayback();
         } catch (Throwable t) {
             Toast.makeText(this, "Couldn't play: " + t.toString(),
                     Toast.LENGTH_LONG).show();
             finish();
+        }
+    }
+
+    /** Load the file only once both mpv and the surface are ready. */
+    private void maybeStartPlayback() {
+        if (mpvReady && surfaceReady && !fileStarted) {
+            fileStarted = true;
+            try {
+                MPVLib.command(new String[]{"loadfile", streamUrl});
+            } catch (Throwable t) {
+                Toast.makeText(this, "Couldn't play: " + t.toString(),
+                        Toast.LENGTH_LONG).show();
+                finish();
+            }
         }
     }
 
@@ -275,7 +309,20 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     @Override
     protected void onPause() {
         super.onPause();
-        try { MPVLib.setPropertyBoolean("pause", true); } catch (Exception ignored) {}
+        try {
+            wasPlayingOnPause = !MPVLib.getPropertyBoolean("pause");
+            MPVLib.setPropertyBoolean("pause", true);
+        } catch (Exception ignored) {}
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Surface callbacks restore vo; resume playback only if it was playing.
+        if (wasPlayingOnPause) {
+            wasPlayingOnPause = false;
+            try { MPVLib.setPropertyBoolean("pause", false); } catch (Exception ignored) {}
+        }
     }
 
     @Override

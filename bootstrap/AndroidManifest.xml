@@ -35,6 +35,9 @@
             android:exported="true" />
         <activity
             android:name=".ui.PlayerActivity"
-            android:exported="true" />
+            android:exported="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|colorMode"
+            android:launchMode="singleTop"
+            android:screenOrientation="sensorLandscape" />
     </application>
 </manifest>
