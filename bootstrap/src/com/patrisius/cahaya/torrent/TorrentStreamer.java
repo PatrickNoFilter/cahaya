@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public class TorrentStreamer {
     private static final String TAG = "TorrentStreamer";
-    private static final long READY_BYTES = 8L * 1024 * 1024; // start playback after this much
+    private static final long READY_BYTES = 2L * 1024 * 1024; // start playback after this much (mpv buffers the rest)
     private static final int META_TIMEOUT_S = 120;
 
     public interface Callback {
