@@ -205,6 +205,7 @@ public class TorrentStreamer {
             boolean ready = false;
             long lastReport = 0;
             long lastFlush = 0;
+            long startTime = System.currentTimeMillis();
             while (!stopped) {
                 // Flush libtorrent's memory cache to disk so the HTTP server
                 // (which reads the file) sees the same bytes havePiece reports.
@@ -233,16 +234,11 @@ public class TorrentStreamer {
                     }
                     progress(cb, ready ? "Downloading…" : "Buffering…", pct, detail);
                 }
-                if (!ready && done >= need) {
-                    // Verify the file header is valid before launching the player.
-                    // If the first bytes aren't the MKV/MP4 magic, the data isn't
-                    // actually on disk yet (flush issue) — wait for it.
-                    // Note: we don't wait for tail pieces (MKV seek table) anymore;
-                    // mpv can play without it, seeking just won't work until downloaded.
-                    if (hasValidHeader(targetFile)) {
-                        ready = true;
-                        cb.onReady(httpUrl, fileName);
-                    }
+                if (!ready && done > 0) {
+                    // Start mpv as soon as we have ANY data.
+                    // mpv handles buffering internally.
+                    ready = true;
+                    cb.onReady(httpUrl, fileName);
                 }
                 if (targetSize > 0 && done >= targetSize) break;
                 sleep(1000);
