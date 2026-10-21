@@ -34,6 +34,10 @@ public class AddonManager {
     public static final String[] MORE_DEFAULTS = {
             "https://mediafusion.elfhosted.com", // streams (needs config for most sources)
             "https://subdl.strem.top",           // subtitles
+            "https://torrentio.strem.fun",       // streams (main torrent source)
+            "https://comet.elfhosted.com",       // streams (needs config)
+            "https://catalog.nuvio.tv",          // catalog
+            "https://opensubtitles-v3.strem.io", // subtitles (needs API key)
     };
     /**
      * Curated suggestions shown in the Addons screen (not auto-installed).
@@ -75,13 +79,15 @@ public class AddonManager {
                 }
                 for (String def : defs) {
                     if (!urls.contains(def)) {
+                        // Add the default; if the manifest fetch fails (e.g. Cloudflare
+                        // block), still add it — the user can remove it manually.
+                        // A dead default must not block the others.
                         try {
                             fetchText(def + "/manifest.json"); // throws if dead
-                            urls.add(def);
-                            fresh = true;
                         } catch (Exception skipped) {
-                            // a dead default must not block the others
                         }
+                        urls.add(def);
+                        fresh = true;
                     }
                 }
                 prefs.edit().putStringSet("urls", urls).apply();
