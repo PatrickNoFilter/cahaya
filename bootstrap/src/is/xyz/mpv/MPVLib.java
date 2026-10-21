@@ -9,6 +9,16 @@ import android.view.Surface;
  */
 public class MPVLib {
     static {
+        // libmpv.so has DT_NEEDED on the FFmpeg libs; load them first
+        // so the linker resolves them reliably on all devices/ABIs.
+        System.loadLibrary("c++_shared");
+        System.loadLibrary("avutil");
+        System.loadLibrary("swresample");
+        System.loadLibrary("swscale");
+        System.loadLibrary("avcodec");
+        System.loadLibrary("avformat");
+        System.loadLibrary("avfilter");
+        System.loadLibrary("avdevice");
         System.loadLibrary("mpv");
         System.loadLibrary("player");
     }
