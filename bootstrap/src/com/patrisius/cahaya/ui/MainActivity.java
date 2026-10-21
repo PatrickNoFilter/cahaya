@@ -30,6 +30,8 @@ import android.widget.Toast;
 import com.patrisius.cahaya.CahayaApp;
 import com.patrisius.cahaya.R;
 import com.patrisius.cahaya.addon.AddonManager;
+import com.patrisius.cahaya.qr.QrCode;
+import com.patrisius.cahaya.web.AddonWebServer;
 import com.patrisius.cahaya.addon.CatalogItem;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
@@ -81,6 +83,7 @@ public class MainActivity extends Activity {
 
     private AddonManager mgr;
     private PluginManager plugins;
+    private AddonWebServer webServer;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -389,9 +392,114 @@ public class MainActivity extends Activity {
         return col;
     }
 
+    /** Nuvio-style: show a QR + LAN address so the phone can push addon URLs. */
+    private void showPhoneInstallDialog() {
+        if (webServer != null) {
+            webServer.stop();
+            webServer = null;
+        }
+        webServer = new AddonWebServer((url, cb) -> mgr.installAddon(url, cb));
+        final int port;
+        try {
+            port = webServer.start();
+        } catch (Exception e) {
+            Toast.makeText(this, "Could not start web server: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        String ip = getLanIp();
+        final String addr = "http://" + (ip != null ? ip : "this-tv") + ":" + port;
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        int pad = dp(16);
+        col.setPadding(pad, pad, pad, pad);
+
+        TextView t1 = new TextView(this);
+        t1.setText("On your phone, open:");
+        t1.setTextColor(Color.GRAY);
+        col.addView(t1);
+
+        TextView t2 = new TextView(this);
+        t2.setText(addr);
+        t2.setTextSize(20);
+        t2.setTextColor(Color.WHITE);
+        t2.setPadding(0, dp(4), 0, dp(12));
+        col.addView(t2);
+
+        try {
+            ImageView qr = new ImageView(this);
+            qr.setImageBitmap(qrBitmap(addr, dp(280)));
+            col.addView(qr);
+        } catch (Exception e) {
+            TextView err = new TextView(this);
+            err.setText("QR unavailable: " + e.getMessage());
+            err.setTextColor(Color.RED);
+            col.addView(err);
+        }
+
+        TextView t3 = new TextView(this);
+        t3.setText("Paste the addon URL on the phone page.\n"
+                + "The server stops when this dialog closes.");
+        t3.setTextColor(Color.GRAY);
+        t3.setGravity(android.view.Gravity.CENTER);
+        t3.setPadding(0, dp(12), 0, 0);
+        col.addView(t3);
+
+        AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("\uD83D\uDCF1 Add via phone")
+                .setView(col)
+                .setNegativeButton("Close", null)
+                .create();
+        dlg.setOnDismissListener(d -> {
+            if (webServer != null) {
+                webServer.stop();
+                webServer = null;
+            }
+        });
+        dlg.show();
+        updateInfo("Add via phone: " + addr);
+    }
+
+    private String getLanIp() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> ifs =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (ifs.hasMoreElements()) {
+                java.net.NetworkInterface ni = ifs.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) {
+                    continue;
+                }
+                java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    java.net.InetAddress a = addrs.nextElement();
+                    if (a instanceof java.net.Inet4Address && !a.isLoopbackAddress()) {
+                        return a.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private Bitmap qrBitmap(String text, int px) {
+        boolean[][] m = QrCode.encode(text);
+        int n = m.length, quiet = 2, total = n + quiet * 2;
+        Bitmap small = Bitmap.createBitmap(total, total, Bitmap.Config.ARGB_8888);
+        for (int y = 0; y < total; y++) {
+            for (int x = 0; x < total; x++) {
+                int mx = x - quiet, my = y - quiet;
+                boolean dark = mx >= 0 && my >= 0 && mx < n && my < n && m[my][mx];
+                small.setPixel(x, y, dark ? Color.BLACK : Color.WHITE);
+            }
+        }
+        return Bitmap.createScaledBitmap(small, px, px, false);
+    }
+
     /** TV-friendly dialog: paste any Stremio addon manifest URL to install it. */
-    private void showInstallUrlDialog() {
-        final EditText input = new EditText(this);
+    private void showInstallUrlDialog() {        final EditText input = new EditText(this);
         input.setHint("https://…");
         input.setInputType(EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_VARIATION_URI);
         input.setSingleLine(true);
@@ -676,6 +784,35 @@ public class MainActivity extends Activity {
         urlRow.setOnClickListener(v -> showInstallUrlDialog());
         col.addView(urlRow);
 
+        LinearLayout phoneRow = new LinearLayout(this);
+        phoneRow.setOrientation(LinearLayout.VERTICAL);
+        phoneRow.setPadding(dp(16), dp(12), dp(16), dp(12));
+        phoneRow.setBackgroundColor(Color.parseColor("#1E2126"));
+        LinearLayout.LayoutParams phoneLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        phoneLp.setMargins(0, 0, 0, dp(10));
+        phoneRow.setLayoutParams(phoneLp);
+        phoneRow.setFocusable(true);
+        phoneRow.setClickable(true);
+        phoneRow.setOnFocusChangeListener((v, hasFocus) ->
+                v.setBackgroundColor(hasFocus
+                        ? Color.parseColor("#2A4A5A") : Color.parseColor("#1E2126")));
+
+        TextView phoneName = new TextView(this);
+        phoneName.setText("\uD83D\uDCF1 Add via phone (QR)");
+        phoneName.setTextSize(18);
+        phoneName.setTextColor(Color.parseColor("#4FC3F7"));
+        phoneRow.addView(phoneName);
+
+        TextView phoneSub = new TextView(this);
+        phoneSub.setText("Scan the code with your phone, paste the URL there");
+        phoneSub.setTextColor(Color.GRAY);
+        phoneRow.addView(phoneSub);
+
+        phoneRow.setOnClickListener(v -> showPhoneInstallDialog());
+        col.addView(phoneRow);
+
         TextView sh = new TextView(this);
         sh.setText("Suggested");
         sh.setTextSize(22);
@@ -735,7 +872,10 @@ public class MainActivity extends Activity {
             });
             col.addView(row);
         }
-        return col;
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
+        sv.addView(col);
+        return sv;
     }
 
     // ---------------- Plugins ----------------
@@ -892,7 +1032,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.6.0 (build 7)");
+        addSettingRow(col, "Version", "0.7.0 (build 8)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
@@ -937,7 +1077,7 @@ public class MainActivity extends Activity {
                 HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
                 c.setConnectTimeout(15000);
                 c.setReadTimeout(30000);
-                c.setRequestProperty("User-Agent", "Cahaya/0.6.0 (Android TV)");
+                c.setRequestProperty("User-Agent", "Cahaya/0.7.0 (Android TV)");
                 InputStream in = c.getInputStream();
                 final Bitmap bmp = BitmapFactory.decodeStream(in);
                 in.close();

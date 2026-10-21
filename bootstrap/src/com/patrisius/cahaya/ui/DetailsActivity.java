@@ -308,7 +308,7 @@ public class DetailsActivity extends Activity {
                 HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
                 c.setConnectTimeout(15000);
                 c.setReadTimeout(30000);
-                c.setRequestProperty("User-Agent", "Cahaya/0.6.0 (Android TV)");
+                c.setRequestProperty("User-Agent", "Cahaya/0.7.0 (Android TV)");
                 InputStream in = c.getInputStream();
                 final Bitmap bmp = BitmapFactory.decodeStream(in);
                 in.close();
