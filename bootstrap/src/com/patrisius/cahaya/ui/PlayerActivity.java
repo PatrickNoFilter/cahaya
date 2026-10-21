@@ -280,9 +280,13 @@ public class PlayerActivity extends Activity
     private void selectTimedTextTrack() {
         try {
             MediaPlayer.TrackInfo[] tracks = mp.getTrackInfo();
+            boolean audioSelected = false;
             for (int i = 0; i < tracks.length; i++) {
                 int tt = tracks[i].getTrackType();
-                if (tt == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT
+                if (tt == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO && !audioSelected) {
+                    mp.selectTrack(i);
+                    audioSelected = true;
+                } else if (tt == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT
                         || tt == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE) {
                     mp.selectTrack(i);
                     return;
