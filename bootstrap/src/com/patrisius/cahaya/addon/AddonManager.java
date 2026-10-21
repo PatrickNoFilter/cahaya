@@ -40,6 +40,20 @@ public class AddonManager {
             "https://opensubtitles-v3.strem.io", // subtitles (needs API key)
     };
     /**
+     * Built-in addons, hardcoded so they survive reinstalls and data wipes.
+     * These are always active; user-added addons from prefs are merged in.
+     */
+    public static final String[] BUILT_IN_ADDONS = {
+            "https://v3-cinemeta.strem.io",
+            "https://subdl.strem.top",
+            "https://subsource.strem.top",
+            "https://opensubtitles-v3.strem.io",
+            "https://mediafusion.elfhosted.com",
+            "https://catalog.nuvio.tv",
+            "https://comet.elfhosted.com",
+            "https://torrentio.strem.fun",
+    };
+    /**
      * Curated suggestions shown in the Addons screen (not auto-installed).
      * Each entry: {name, manifest base URL, note}.
      */
@@ -62,7 +76,12 @@ public class AddonManager {
     }
 
     public Set<String> addonUrls() {
-        return prefs.getStringSet("urls", new HashSet<String>());
+        // Built-ins are hardcoded so they survive reinstalls/data wipes.
+        // User-added addons from prefs are merged in.
+        Set<String> urls = new HashSet<>();
+        for (String u : BUILT_IN_ADDONS) urls.add(u);
+        urls.addAll(prefs.getStringSet("urls", new HashSet<String>()));
+        return urls;
     }
 
     /** Installs the default addons on first run (validates their manifests). */
