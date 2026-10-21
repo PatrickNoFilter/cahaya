@@ -235,8 +235,8 @@ public class PlayerActivity extends Activity {
             });
 
             startPlayback(testSubUrl, 0);
-        } catch (Exception e) {
-            Toast.makeText(this, "Couldn't play: " + e.getMessage(),
+        } catch (Throwable t) {
+            Toast.makeText(this, "Couldn't play: " + t.toString(),
                     Toast.LENGTH_LONG).show();
             finish();
         }
@@ -262,8 +262,8 @@ public class PlayerActivity extends Activity {
                 player.seekTo(resumeMs);
             }
             player.play();
-        } catch (Exception e) {
-            Toast.makeText(this, "Couldn't play: " + e.getMessage(),
+        } catch (Throwable t) {
+            Toast.makeText(this, "Couldn't play: " + t.toString(),
                     Toast.LENGTH_LONG).show();
             finish();
         }
