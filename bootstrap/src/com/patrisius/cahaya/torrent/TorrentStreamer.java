@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public class TorrentStreamer {
     private static final String TAG = "TorrentStreamer";
-    private static final long READY_BYTES = 2L * 1024 * 1024; // start playback after this much (mpv buffers the rest)
+    private static final long READY_BYTES = 16L * 1024 * 1024; // start playback after this much (mpv needs header + seek table)
     private static final int META_TIMEOUT_S = 120;
 
     public interface Callback {
@@ -50,6 +50,7 @@ public class TorrentStreamer {
     private long pieceLen;
     private int firstPiece;
     private int lastPiece;
+    private int fileIndex;
     private TorrentHandle handle;
 
     public synchronized void start(Context ctx, String magnetUri, int fileIdx,
@@ -139,6 +140,7 @@ public class TorrentStreamer {
             int n = ti.numFiles();
             int idx = (fileIdx >= 0 && fileIdx < n) ? fileIdx
                     : largestVideo(fs, n);
+            fileIndex = idx;
             String relPath = fs.filePath(idx);
             targetSize = fs.fileSize(idx);
             targetFile = new File(dir, relPath);
@@ -290,8 +292,14 @@ public class TorrentStreamer {
         try {
             // Flush so havePiece matches what's readable from disk.
             h.flushCache();
-            int p0 = firstPiece + (int) (start / pieceLen);
-            int p1 = firstPiece + (int) (end / pieceLen);
+            // Correct: (fileOffset + start) / pieceLen, not firstPiece + start/pieceLen
+            // (integer division makes those different when file doesn't start on piece boundary)
+            long fileOff = 0;
+            try {
+                fileOff = h.torrentFile().files().fileOffset(fileIndex);
+            } catch (Exception ignored) {}
+            int p0 = (int) ((fileOff + start) / pieceLen);
+            int p1 = (int) ((fileOff + end) / pieceLen);
             if (p0 < firstPiece) p0 = firstPiece;
             if (p1 > lastPiece) p1 = lastPiece;
             for (int p = p0; p <= p1; p++) {
