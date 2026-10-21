@@ -202,7 +202,44 @@ public class PlayerActivity extends Activity {
 
     private void initPlayer() {
         try {
-            player = new ExoPlayer.Builder(this).build();
+            // Custom renderers factory: force Stereo PCM with software downmix.
+            // This fixes volume control (passthrough can't be volume-scaled)
+            // and bad 5.1 downmixes on cheap boxes.
+            androidx.media3.exoplayer.DefaultRenderersFactory rf =
+                    new androidx.media3.exoplayer.DefaultRenderersFactory(this) {
+                @Override
+                protected androidx.media3.exoplayer.audio.AudioSink buildAudioSink(
+                        android.content.Context context,
+                        boolean enableFloatOutput,
+                        boolean enableAudioTrackPlaybackParams) {
+                    androidx.media3.exoplayer.audio.DefaultAudioSink.Builder b =
+                            new androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                                    .setEnableFloatOutput(enableFloatOutput)
+                                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams);
+                    // PCM only, no passthrough: report default (stereo) capabilities
+                    b.setAudioCapabilities(
+                            androidx.media3.exoplayer.audio.AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES);
+                    // Downmix multichannel to stereo in software
+                    b.setAudioProcessorChain(
+                            new androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(
+                                    new androidx.media3.common.audio.AudioProcessor[]{
+                                            createStereoDownmix()
+                                    }));
+                    return b.build();
+                }
+            };
+            rf.setEnableDecoderFallback(true);
+
+            player = new androidx.media3.exoplayer.ExoPlayer.Builder(this, rf).build();
+
+            // Explicit audio attributes: media usage, movie content, handle focus
+            androidx.media3.common.AudioAttributes aa =
+                    new androidx.media3.common.AudioAttributes.Builder()
+                            .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                            .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                            .build();
+            player.setAudioAttributes(aa, true);
+
             player.setVideoSurfaceView(surfaceView);
 
             player.addListener(new Player.Listener() {
@@ -446,5 +483,18 @@ public class PlayerActivity extends Activity {
         long m = s / 60;
         s %= 60;
         return m + ":" + (s < 10 ? "0" : "") + s;
+    }
+
+    /**
+     * Downmixes 5.1 audio to stereo in software using Media3's built-in
+     * ITU-style mixing matrix. For non-5.1 input the processor passes
+     * audio through untouched.
+     */
+    private static androidx.media3.common.audio.AudioProcessor createStereoDownmix() {
+        androidx.media3.common.audio.ChannelMixingAudioProcessor p =
+                new androidx.media3.common.audio.ChannelMixingAudioProcessor();
+        p.putChannelMixingMatrix(
+                androidx.media3.common.audio.ChannelMixingMatrix.create(6, 2));
+        return p;
     }
 }
