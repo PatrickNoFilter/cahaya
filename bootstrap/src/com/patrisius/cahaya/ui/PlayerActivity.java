@@ -59,6 +59,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // adjusted on seek, reset on loadfile.
     private double manualPos = 0;
     private boolean isPlaying = false;
+    // Values from mpv eventProperty callbacks — more reliable than getPropertyDouble
+    // polling for streams. -1 means unknown.
+    private volatile double mpvTimePos = -1;
+    private volatile double mpvDuration = -1;
 
     private final Runnable hideController = () -> setControllerVisible(false);
     private final Runnable progressTick = new Runnable() {
@@ -229,6 +233,8 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             // Reset manual position tracking for new file
             manualPos = 0;
             isPlaying = true;
+            mpvTimePos = -1;
+            mpvDuration = -1;
             try {
                 MPVLib.command(new String[]{"loadfile", streamUrl});
             } catch (Throwable t) {
@@ -248,14 +254,24 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     private void updateProgress() {
         try {
-            // Use manual position tracking — mpv's time-pos is unavailable for our stream.
-            // Duration is unknown, so show position with --:-- and disable seekbar.
-            double pos = manualPos;
+            // Prefer mpv's reported values (via eventProperty callbacks).
+            // Fallback to manual tracking if mpv hasn't reported yet.
+            double pos = (mpvTimePos >= 0) ? mpvTimePos : manualPos;
+            double dur = mpvDuration;
             if (pos >= 0) {
-                timeView.setText(fmt((long)(pos*1000)) + " / --:--");
-                // Seekbar disabled: we don't know duration, can't show progress fraction.
-                // Nuvio shows an indeterminate progress bar in this case; we keep it simple.
-                seekBar.setEnabled(false);
+                if (dur > 1.0) {
+                    // We know duration: show "1:23 / 45:67" and enable seekbar
+                    timeView.setText(fmt((long)(pos*1000)) + " / " + fmt((long)(dur*1000)));
+                    int prog = (int) (pos * 1000 / dur);
+                    if (prog < 0) prog = 0;
+                    if (prog > 1000) prog = 1000;
+                    seekBar.setProgress(prog);
+                    seekBar.setEnabled(true);
+                } else {
+                    // Duration unknown: show "1:23 / --:--", disable seekbar
+                    timeView.setText(fmt((long)(pos*1000)) + " / --:--");
+                    seekBar.setEnabled(false);
+                }
             }
             // Hide loading once we have video (pos > 0 means playback started)
             if (pos > 0 && loadingView.getVisibility() == View.VISIBLE) {
@@ -316,9 +332,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     @Override public void eventProperty(String property) {}
     @Override public void eventProperty(String property, long value) {}
     @Override public void eventProperty(String property, double value) {
-        // Update progress immediately when mpv reports time-pos or duration changes.
-        // This is how Nuvio/mpv-android do it — reactive, not polled.
-        if ("time-pos".equals(property) || "duration".equals(property)) {
+        // Store the value from mpv's callback — this is more reliable than
+        // polling getPropertyDouble() for streams.
+        // This is how Nuvio/mpv-android do it.
+        if ("time-pos".equals(property)) {
+            mpvTimePos = value;
+            main.post(() -> updateProgress());
+        } else if ("duration".equals(property)) {
+            mpvDuration = value;
             main.post(() -> updateProgress());
         }
     }
