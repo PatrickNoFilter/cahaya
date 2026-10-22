@@ -137,12 +137,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         controller.setBackgroundColor(0x99000000); // Semi-transparent black
         controller.setVisibility(View.GONE);
 
-        // Helper: Add focus highlight to buttons (orange background when focused via D-pad)
+        // Helper: Focus highlight - blue background + white icons when focused, blue icons when not
         android.view.View.OnFocusChangeListener focusHighlight = (v, hasFocus) -> {
             if (hasFocus) {
-                v.setBackgroundColor(0xFF2196F3); // Blue accent
+                v.setBackgroundColor(0xFF2196F3); // Blue background
+                if (v instanceof Button) ((Button) v).setTextColor(Color.WHITE);
             } else {
                 v.setBackgroundColor(0x00000000); // Transparent
+                if (v instanceof Button) ((Button) v).setTextColor(0xFF2196F3); // Blue icons
             }
         };
 
@@ -154,6 +156,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         Button backBtn = new Button(this);
         backBtn.setId(View.generateViewId());
         backBtn.setText("◀");
+        backBtn.setTextColor(0xFF2196F3); // Blue icons
         backBtn.setTextSize(20);
         backBtn.setFocusable(true);
         backBtn.setOnFocusChangeListener(focusHighlight);
@@ -182,6 +185,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         Button rewindBtn = new Button(this);
         rewindBtn.setId(View.generateViewId());
         rewindBtn.setText("⏪");
+        rewindBtn.setTextColor(0xFF2196F3); // Blue icons
         rewindBtn.setTextSize(36);
         rewindBtn.setFocusable(true);
         rewindBtn.setOnFocusChangeListener(focusHighlight);
@@ -198,6 +202,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         playPauseBtn = new Button(this);
         playPauseBtn.setId(View.generateViewId());
         playPauseBtn.setText("⏸");
+        playPauseBtn.setTextColor(0xFF2196F3); // Blue icons
         playPauseBtn.setTextSize(48);
         playPauseBtn.setFocusable(true);
         playPauseBtn.setOnFocusChangeListener(focusHighlight);
@@ -208,6 +213,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         Button forwardBtn = new Button(this);
         forwardBtn.setId(View.generateViewId());
         forwardBtn.setText("⏩");
+        forwardBtn.setTextColor(0xFF2196F3); // Blue icons
         forwardBtn.setTextSize(36);
         forwardBtn.setFocusable(true);
         forwardBtn.setOnFocusChangeListener(focusHighlight);
@@ -225,6 +231,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         Button ccBtn = new Button(this);
         ccBtn.setId(View.generateViewId());
         ccBtn.setText("CC");
+        ccBtn.setTextColor(0xFF2196F3); // Blue icons
         ccBtn.setTextSize(24);
         ccBtn.setFocusable(true);
         ccBtn.setOnFocusChangeListener(focusHighlight);
@@ -237,11 +244,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             if (subtitlesOn[0]) {
                 MPVLib.command(new String[]{"set", "sub-visibility", "yes"});
                 ccBtn.setBackgroundColor(0xFF2196F3); // Blue when active
-                ccBtn.setTextColor(Color.BLACK);
+                ccBtn.setTextColor(Color.WHITE);
             } else {
                 MPVLib.command(new String[]{"set", "sub-visibility", "no"});
                 ccBtn.setBackgroundColor(0x00000000); // Transparent when inactive
-                ccBtn.setTextColor(Color.WHITE);
+                ccBtn.setTextColor(0xFF2196F3); // Blue icons
             }
             setControllerVisible(true);
         });
@@ -249,15 +256,15 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         ccBtn.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
                 v.setBackgroundColor(0xFF2196F3);
-                ((Button)v).setTextColor(Color.BLACK);
+                ((Button)v).setTextColor(Color.WHITE); // White on blue for contrast
             } else {
                 // Restore state-based color
                 if (subtitlesOn[0]) {
                     v.setBackgroundColor(0xFF2196F3);
-                    ((Button)v).setTextColor(Color.BLACK);
+                    ((Button)v).setTextColor(Color.WHITE);
                 } else {
                     v.setBackgroundColor(0x00000000);
-                    ((Button)v).setTextColor(Color.WHITE);
+                    ((Button)v).setTextColor(0xFF2196F3); // Blue icons when inactive
                 }
             }
         });
@@ -414,6 +421,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         MPVLib.setPropertyBoolean("pause", !paused);
         isPlaying = paused; // paused was true -> now playing
         playPauseBtn.setText(paused ? "⏸" : "▶");
+        playPauseBtn.setTextColor(0xFF2196F3); // Blue icons
     }
 
     private void updateProgress() {
