@@ -323,17 +323,21 @@ public class TorrentStreamer {
     /**
      * Prioritize pieces for a requested byte range (e.g., mpv fetching MKV cues).
      * Sets deadline=0 (needed now) and TOP_PRIORITY.
+     * Only prioritizes the first 2MB of the range to avoid marking the entire
+     * file as TOP_PRIORITY when mpv requests bytes=0- (whole file).
      */
     private void prioritizePiecesForRange(long start, long end) {
         TorrentHandle h = handle;
         if (h == null || pieceLen <= 0) return;
         try {
+            // Limit to first 2MB of the requested range
+            long limitedEnd = Math.min(end, start + 2L * 1024 * 1024 - 1);
             long fileOff = 0;
             try {
                 fileOff = h.torrentFile().files().fileOffset(fileIndex);
             } catch (Exception ignored) {}
             int p0 = (int) ((fileOff + start) / pieceLen);
-            int p1 = (int) ((fileOff + end) / pieceLen);
+            int p1 = (int) ((fileOff + limitedEnd) / pieceLen);
             if (p0 < firstPiece) p0 = firstPiece;
             if (p1 > lastPiece) p1 = lastPiece;
             for (int p = p0; p <= p1; p++) {
