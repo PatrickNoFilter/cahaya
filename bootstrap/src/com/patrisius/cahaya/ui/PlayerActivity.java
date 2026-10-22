@@ -237,14 +237,22 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         try {
             double pos = MPVLib.getPropertyDouble("time-pos");
             double dur = MPVLib.getPropertyDouble("duration");
-            // Require dur > 1.0s to avoid tiny/unstable duration values placing
-            // the thumb at the end (pos*1000/dur overflows when dur is ~0).
-            if (dur > 1.0 && pos >= 0) {
-                int prog = (int) (pos * 1000 / dur);
-                if (prog < 0) prog = 0;
-                if (prog > 1000) prog = 1000;
-                seekBar.setProgress(prog);
-                timeView.setText(fmt((long)(pos*1000)) + " / " + fmt((long)(dur*1000)));
+            if (pos >= 0) {
+                // Show position even if duration is unknown (dur <= 0).
+                // Nuvio shows "0:00 / --:--" in this case.
+                String durStr = (dur > 1.0) ? fmt((long)(dur*1000)) : "--:--";
+                timeView.setText(fmt((long)(pos*1000)) + " / " + durStr);
+                // Only update seekbar if we know the duration.
+                if (dur > 1.0) {
+                    int prog = (int) (pos * 1000 / dur);
+                    if (prog < 0) prog = 0;
+                    if (prog > 1000) prog = 1000;
+                    seekBar.setProgress(prog);
+                    seekBar.setEnabled(true);
+                } else {
+                    // Duration unknown: disable seeking, keep thumb at start.
+                    seekBar.setEnabled(false);
+                }
             }
             // Hide loading once we have video
             if (pos > 0 && loadingView.getVisibility() == View.VISIBLE) {
@@ -300,7 +308,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // MPVLib.EventObserver
     @Override public void eventProperty(String property) {}
     @Override public void eventProperty(String property, long value) {}
-    @Override public void eventProperty(String property, double value) {}
+    @Override public void eventProperty(String property, double value) {
+        // Update progress immediately when mpv reports time-pos or duration changes.
+        // This is how Nuvio/mpv-android do it — reactive, not polled.
+        if ("time-pos".equals(property) || "duration".equals(property)) {
+            main.post(() -> updateProgress());
+        }
+    }
     @Override public void eventProperty(String property, boolean value) {
         if ("pause".equals(property)) {
             main.post(() -> playPauseBtn.setText(value ? "Play" : "Pause"));
