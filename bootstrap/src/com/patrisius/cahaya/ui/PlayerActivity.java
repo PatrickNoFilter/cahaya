@@ -184,7 +184,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
         Button rewindBtn = new Button(this);
         rewindBtn.setId(View.generateViewId());
-        rewindBtn.setText("⏪");
+        rewindBtn.setText("◀◀");
         rewindBtn.setTextColor(0xFF2196F3); // Blue icons
         rewindBtn.setTextSize(36);
         rewindBtn.setFocusable(true);
@@ -201,7 +201,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
         playPauseBtn = new Button(this);
         playPauseBtn.setId(View.generateViewId());
-        playPauseBtn.setText("⏸");
+        playPauseBtn.setText("❚❚");
         playPauseBtn.setTextColor(0xFF2196F3); // Blue icons
         playPauseBtn.setTextSize(48);
         playPauseBtn.setFocusable(true);
@@ -212,7 +212,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
         Button forwardBtn = new Button(this);
         forwardBtn.setId(View.generateViewId());
-        forwardBtn.setText("⏩");
+        forwardBtn.setText("▶▶");
         forwardBtn.setTextColor(0xFF2196F3); // Blue icons
         forwardBtn.setTextSize(36);
         forwardBtn.setFocusable(true);
@@ -420,7 +420,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         boolean paused = MPVLib.getPropertyBoolean("pause");
         MPVLib.setPropertyBoolean("pause", !paused);
         isPlaying = paused; // paused was true -> now playing
-        playPauseBtn.setText(paused ? "⏸" : "▶");
+        playPauseBtn.setText(paused ? "❚❚" : "▶");
         playPauseBtn.setTextColor(0xFF2196F3); // Blue icons
     }
 
@@ -518,7 +518,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     @Override public void eventProperty(String property, boolean value) {
         if ("pause".equals(property)) {
             isPlaying = !value;
-            main.post(() -> playPauseBtn.setText(value ? "▶" : "⏸"));
+            main.post(() -> playPauseBtn.setText(value ? "▶" : "❚❚"));
         }
     }
     @Override public void eventProperty(String property, String value) {}
