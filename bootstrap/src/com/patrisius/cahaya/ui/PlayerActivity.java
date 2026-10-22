@@ -152,6 +152,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         topBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
         topBar.setPadding(dp(16), dp(16), dp(16), 0);
         Button backBtn = new Button(this);
+        backBtn.setId(View.generateViewId());
         backBtn.setText("◀");
         backBtn.setTextSize(20);
         backBtn.setFocusable(true);
@@ -179,6 +180,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         centerConsole.setPadding(dp(32), dp(32), dp(32), dp(32));
 
         Button rewindBtn = new Button(this);
+        rewindBtn.setId(View.generateViewId());
         rewindBtn.setText("⏪");
         rewindBtn.setTextSize(36);
         rewindBtn.setFocusable(true);
@@ -194,6 +196,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         centerConsole.addView(rewindBtn, rlp);
 
         playPauseBtn = new Button(this);
+        playPauseBtn.setId(View.generateViewId());
         playPauseBtn.setText("⏸");
         playPauseBtn.setTextSize(48);
         playPauseBtn.setFocusable(true);
@@ -203,6 +206,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         centerConsole.addView(playPauseBtn, pblp);
 
         Button forwardBtn = new Button(this);
+        forwardBtn.setId(View.generateViewId());
         forwardBtn.setText("⏩");
         forwardBtn.setTextSize(36);
         forwardBtn.setFocusable(true);
@@ -219,6 +223,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
         // CC (subtitle) toggle button with state indicator
         Button ccBtn = new Button(this);
+        ccBtn.setId(View.generateViewId());
         ccBtn.setText("CC");
         ccBtn.setTextSize(24);
         ccBtn.setFocusable(true);
@@ -284,6 +289,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         bottomBar.addView(timeRow);
 
         seekBar = new SeekBar(this);
+        seekBar.setId(View.generateViewId());
         seekBar.setMax(1000);
         seekBar.setEnabled(false);
         seekBar.setFocusable(true);
@@ -321,6 +327,23 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         root.addView(controller, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // D-pad navigation chain: Back ↔ buttons ↔ seekbar
+        // Center row: ⏪ ←→ ⏸ ←→ ⏩ ←→ CC
+        rewindBtn.setNextFocusRightId(playPauseBtn.getId());
+        playPauseBtn.setNextFocusLeftId(rewindBtn.getId());
+        playPauseBtn.setNextFocusRightId(forwardBtn.getId());
+        forwardBtn.setNextFocusLeftId(playPauseBtn.getId());
+        forwardBtn.setNextFocusRightId(ccBtn.getId());
+        ccBtn.setNextFocusLeftId(forwardBtn.getId());
+        // Up/Down: buttons ↔ seekbar, Back ↓ → ⏪
+        rewindBtn.setNextFocusDownId(seekBar.getId());
+        playPauseBtn.setNextFocusDownId(seekBar.getId());
+        forwardBtn.setNextFocusDownId(seekBar.getId());
+        ccBtn.setNextFocusDownId(seekBar.getId());
+        seekBar.setNextFocusUpId(playPauseBtn.getId());
+        backBtn.setNextFocusDownId(rewindBtn.getId());
+        rewindBtn.setNextFocusUpId(backBtn.getId());
 
         setContentView(root);
 
