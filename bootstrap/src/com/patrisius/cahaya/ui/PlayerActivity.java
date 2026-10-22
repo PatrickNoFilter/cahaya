@@ -140,7 +140,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         // Helper: Add focus highlight to buttons (orange background when focused via D-pad)
         android.view.View.OnFocusChangeListener focusHighlight = (v, hasFocus) -> {
             if (hasFocus) {
-                v.setBackgroundColor(0xFFE8A33D); // Orange/gold accent
+                v.setBackgroundColor(0xFF2196F3); // Blue accent
             } else {
                 v.setBackgroundColor(0x00000000); // Transparent
             }
@@ -231,7 +231,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             subtitlesOn[0] = !subtitlesOn[0];
             if (subtitlesOn[0]) {
                 MPVLib.command(new String[]{"set", "sub-visibility", "yes"});
-                ccBtn.setBackgroundColor(0xFFE8A33D); // Orange when active
+                ccBtn.setBackgroundColor(0xFF2196F3); // Blue when active
                 ccBtn.setTextColor(Color.BLACK);
             } else {
                 MPVLib.command(new String[]{"set", "sub-visibility", "no"});
@@ -243,12 +243,12 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         // When focused, show focus highlight; when active, show orange
         ccBtn.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
-                v.setBackgroundColor(0xFFE8A33D);
+                v.setBackgroundColor(0xFF2196F3);
                 ((Button)v).setTextColor(Color.BLACK);
             } else {
                 // Restore state-based color
                 if (subtitlesOn[0]) {
-                    v.setBackgroundColor(0xFFE8A33D);
+                    v.setBackgroundColor(0xFF2196F3);
                     ((Button)v).setTextColor(Color.BLACK);
                 } else {
                     v.setBackgroundColor(0x00000000);
