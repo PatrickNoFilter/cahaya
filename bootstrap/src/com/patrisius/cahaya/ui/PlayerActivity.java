@@ -54,10 +54,19 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     private String streamUrl;
     private String title;
+    // Manual position tracking (seconds) — mpv's time-pos property is unavailable
+    // for our HTTP stream, so we track it ourselves. Incremented by progressTick,
+    // adjusted on seek, reset on loadfile.
+    private double manualPos = 0;
+    private boolean isPlaying = false;
 
     private final Runnable hideController = () -> setControllerVisible(false);
     private final Runnable progressTick = new Runnable() {
         @Override public void run() {
+            // Increment manual position if playing (mpv time-pos unavailable)
+            if (isPlaying) {
+                manualPos += 1.0;
+            }
             updateProgress();
             main.postDelayed(this, 1000);
         }
@@ -217,6 +226,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void maybeStartPlayback() {
         if (mpvReady && surfaceReady && !fileStarted) {
             fileStarted = true;
+            // Reset manual position tracking for new file
+            manualPos = 0;
+            isPlaying = true;
             try {
                 MPVLib.command(new String[]{"loadfile", streamUrl});
             } catch (Throwable t) {
@@ -230,31 +242,22 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void togglePlay() {
         boolean paused = MPVLib.getPropertyBoolean("pause");
         MPVLib.setPropertyBoolean("pause", !paused);
+        isPlaying = paused; // paused was true -> now playing
         playPauseBtn.setText(paused ? "Pause" : "Play");
     }
 
     private void updateProgress() {
         try {
-            double pos = MPVLib.getPropertyDouble("time-pos");
-            double dur = MPVLib.getPropertyDouble("duration");
+            // Use manual position tracking — mpv's time-pos is unavailable for our stream.
+            // Duration is unknown, so show position with --:-- and disable seekbar.
+            double pos = manualPos;
             if (pos >= 0) {
-                // Show position even if duration is unknown (dur <= 0).
-                // Nuvio shows "0:00 / --:--" in this case.
-                String durStr = (dur > 1.0) ? fmt((long)(dur*1000)) : "--:--";
-                timeView.setText(fmt((long)(pos*1000)) + " / " + durStr);
-                // Only update seekbar if we know the duration.
-                if (dur > 1.0) {
-                    int prog = (int) (pos * 1000 / dur);
-                    if (prog < 0) prog = 0;
-                    if (prog > 1000) prog = 1000;
-                    seekBar.setProgress(prog);
-                    seekBar.setEnabled(true);
-                } else {
-                    // Duration unknown: disable seeking, keep thumb at start.
-                    seekBar.setEnabled(false);
-                }
+                timeView.setText(fmt((long)(pos*1000)) + " / --:--");
+                // Seekbar disabled: we don't know duration, can't show progress fraction.
+                // Nuvio shows an indeterminate progress bar in this case; we keep it simple.
+                seekBar.setEnabled(false);
             }
-            // Hide loading once we have video
+            // Hide loading once we have video (pos > 0 means playback started)
             if (pos > 0 && loadingView.getVisibility() == View.VISIBLE) {
                 loadingView.setVisibility(View.GONE);
             }
@@ -283,11 +286,15 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
                 MPVLib.command(new String[]{"seek", String.valueOf(-SEEK_S)});
+                manualPos = Math.max(0, manualPos - SEEK_S);
                 setControllerVisible(true);
+                main.post(() -> updateProgress());
                 return true;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
                 MPVLib.command(new String[]{"seek", String.valueOf(SEEK_S)});
+                manualPos += SEEK_S;
                 setControllerVisible(true);
+                main.post(() -> updateProgress());
                 return true;
             case KeyEvent.KEYCODE_DPAD_UP:
                 setControllerVisible(true);
@@ -317,6 +324,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     }
     @Override public void eventProperty(String property, boolean value) {
         if ("pause".equals(property)) {
+            isPlaying = !value;
             main.post(() -> playPauseBtn.setText(value ? "Play" : "Pause"));
         }
     }
