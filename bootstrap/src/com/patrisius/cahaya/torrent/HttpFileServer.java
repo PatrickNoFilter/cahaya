@@ -39,6 +39,8 @@ public class HttpFileServer {
     /** Reports whether bytes [start, end] are available on disk. */
     public interface RangeAvailable {
         boolean isAvailable(long start, long end);
+        /** Called when a range is requested: prioritize those pieces for download. */
+        default void prioritizeRange(long start, long end) {}
     }
 
     /** Starts on 127.0.0.1, first free port 8901-8910. Returns base URL. */
@@ -135,6 +137,11 @@ public class HttpFileServer {
                 return;
             }
             if (end < start) end = start;
+
+            // Tell the streamer to prioritize this range (mpv requesting MKV cues, etc.)
+            try {
+                rangeAvailable.prioritizeRange(start, end);
+            } catch (Exception ignored) {}
 
             // Wait only for the first chunk, not the whole range.
             long firstEnd = Math.min(end, start + FIRST_CHUNK - 1);

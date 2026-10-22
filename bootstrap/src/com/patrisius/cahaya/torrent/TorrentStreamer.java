@@ -180,7 +180,9 @@ public class TorrentStreamer {
             handle = h;
 
             int totalPieces = lastPiece - firstPiece + 1;
-            // Head: first 8 pieces (or fewer), deadline 0 = needed now.
+            // Head-only preload: first 8 pieces at flat deadline=0.
+            // Focuses 100% of startup bandwidth on the beginning.
+            // NO tail downloading — mpv fetches MKV cues/moov on-demand via HTTP range.
             int headN = Math.min(8, totalPieces);
             for (int p = firstPiece; p < firstPiece + headN; p++) {
                 try {
@@ -189,17 +191,27 @@ public class TorrentStreamer {
                 } catch (Exception ignored) {
                 }
             }
-            // Tail: last 2 pieces hold the MKV seek table; fetch early too.
-            for (int p = Math.max(lastPiece - 1, firstPiece + headN); p <= lastPiece; p++) {
+            // Readahead: next 30 pieces at lower priority (will be adjusted as playback progresses)
+            int readAheadN = Math.min(30, totalPieces - headN);
+            for (int p = firstPiece + headN; p < firstPiece + headN + readAheadN; p++) {
                 try {
-                    h.setPieceDeadline(p, 0);
+                    h.piecePriority(p, Priority.DEFAULT);
                 } catch (Exception ignored) {
                 }
             }
 
             httpServer = new HttpFileServer();
             String httpUrl = httpServer.start(targetFile, targetSize, fileName,
-                    (s, e) -> isRangeAvailable(s, e));
+                    new HttpFileServer.RangeAvailable() {
+                        @Override
+                        public boolean isAvailable(long s, long e) {
+                            return isRangeAvailable(s, e);
+                        }
+                        @Override
+                        public void prioritizeRange(long s, long e) {
+                            prioritizePiecesForRange(s, e);
+                        }
+                    });
 
             long need = Math.min(READY_BYTES, targetSize);
             boolean ready = false;
@@ -306,6 +318,31 @@ public class TorrentStreamer {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /**
+     * Prioritize pieces for a requested byte range (e.g., mpv fetching MKV cues).
+     * Sets deadline=0 (needed now) and TOP_PRIORITY.
+     */
+    private void prioritizePiecesForRange(long start, long end) {
+        TorrentHandle h = handle;
+        if (h == null || pieceLen <= 0) return;
+        try {
+            long fileOff = 0;
+            try {
+                fileOff = h.torrentFile().files().fileOffset(fileIndex);
+            } catch (Exception ignored) {}
+            int p0 = (int) ((fileOff + start) / pieceLen);
+            int p1 = (int) ((fileOff + end) / pieceLen);
+            if (p0 < firstPiece) p0 = firstPiece;
+            if (p1 > lastPiece) p1 = lastPiece;
+            for (int p = p0; p <= p1; p++) {
+                try {
+                    h.setPieceDeadline(p, 0);
+                    h.piecePriority(p, Priority.TOP_PRIORITY);
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
     }
 
     /** Check if the file starts with a valid video container header. */
