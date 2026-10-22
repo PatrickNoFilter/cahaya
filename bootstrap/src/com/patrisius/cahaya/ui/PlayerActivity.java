@@ -139,40 +139,87 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         controller.setPadding(dp(16), dp(12), dp(16), dp(12));
         controller.setVisibility(View.GONE);
 
+        // Top bar: Back + Title
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        Button backBtn = new Button(this);
+        backBtn.setText("◀ Back");
+        backBtn.setFocusable(true);
+        backBtn.setOnClickListener(v -> finish());
+        topBar.addView(backBtn);
         titleView = new TextView(this);
         titleView.setText(title);
         titleView.setTextColor(Color.WHITE);
         titleView.setTextSize(18);
-        controller.addView(titleView);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        tlp.setMargins(dp(16), 0, 0, 0);
+        topBar.addView(titleView, tlp);
+        controller.addView(topBar);
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
+        // Spacer
+        View spacer = new View(this);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        controller.addView(spacer, slp);
+
+        // Bottom controls: Rewind | Play/Pause | Forward
+        LinearLayout controlsRow = new LinearLayout(this);
+        controlsRow.setOrientation(LinearLayout.HORIZONTAL);
+        controlsRow.setGravity(android.view.Gravity.CENTER);
+        controlsRow.setPadding(0, dp(8), 0, dp(8));
+
+        Button rewindBtn = new Button(this);
+        rewindBtn.setText("⏪ -10s");
+        rewindBtn.setFocusable(true);
+        rewindBtn.setOnClickListener(v -> {
+            MPVLib.command(new String[]{"seek", String.valueOf(-SEEK_S)});
+            manualPos = Math.max(0, manualPos - SEEK_S);
+            main.post(() -> updateProgress());
+            setControllerVisible(true);
+        });
+        controlsRow.addView(rewindBtn);
 
         playPauseBtn = new Button(this);
-        playPauseBtn.setText("Pause");
+        playPauseBtn.setText("⏸ Pause");
+        playPauseBtn.setFocusable(true);
+        LinearLayout.LayoutParams pblp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        pblp.setMargins(dp(24), 0, dp(24), 0);
         playPauseBtn.setOnClickListener(v -> togglePlay());
-        row.addView(playPauseBtn);
+        controlsRow.addView(playPauseBtn, pblp);
 
-        seekBar = new SeekBar(this);
-        seekBar.setMax(1000);
-        LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        row.addView(seekBar, sbp);
-        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                if (fromUser) {
-                    double dur = MPVLib.getPropertyDouble("duration");
-                    if (dur > 0) MPVLib.command(new String[]{"seek", String.valueOf(dur * p / 1000), "absolute"});
-                }
-            }
-            @Override public void onStartTrackingTouch(SeekBar sb) {}
-            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        Button forwardBtn = new Button(this);
+        forwardBtn.setText("+10s ⏩");
+        forwardBtn.setFocusable(true);
+        forwardBtn.setOnClickListener(v -> {
+            MPVLib.command(new String[]{"seek", String.valueOf(SEEK_S)});
+            manualPos += SEEK_S;
+            main.post(() -> updateProgress());
+            setControllerVisible(true);
         });
+        controlsRow.addView(forwardBtn);
+        controller.addView(controlsRow);
+
+        // Seekbar row: Time | SeekBar (seeking disabled - duration unknown)
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
 
         timeView = new TextView(this);
         timeView.setTextColor(Color.WHITE);
-        timeView.setText("0:00 / 0:00");
+        timeView.setText("0:00 / --:--");
         row.addView(timeView);
+
+        seekBar = new SeekBar(this);
+        seekBar.setMax(1000);
+        seekBar.setEnabled(false); // Duration unknown, can't seek by fraction
+        LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        sbp.setMargins(dp(12), 0, dp(12), 0);
+        row.addView(seekBar, sbp);
 
         controller.addView(row);
         FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(
@@ -249,7 +296,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         boolean paused = MPVLib.getPropertyBoolean("pause");
         MPVLib.setPropertyBoolean("pause", !paused);
         isPlaying = paused; // paused was true -> now playing
-        playPauseBtn.setText(paused ? "Pause" : "Play");
+        playPauseBtn.setText(paused ? "⏸ Pause" : "▶ Play");
     }
 
     private void updateProgress() {
@@ -346,7 +393,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     @Override public void eventProperty(String property, boolean value) {
         if ("pause".equals(property)) {
             isPlaying = !value;
-            main.post(() -> playPauseBtn.setText(value ? "Play" : "Pause"));
+            main.post(() -> playPauseBtn.setText(value ? "▶ Play" : "⏸ Pause"));
         }
     }
     @Override public void eventProperty(String property, String value) {}
