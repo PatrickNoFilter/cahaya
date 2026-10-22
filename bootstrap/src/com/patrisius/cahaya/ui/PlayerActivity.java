@@ -87,7 +87,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 try {
                     MPVLib.attachSurface(holder.getSurface());
                     MPVLib.setOptionString("force-window", "yes");
-                    MPVLib.setOptionString("vo", "gpu");
+                    // Use mediacodec_embed instead of gpu to avoid Mali GPU faults.
+                    // mediacodec_embed renders MediaCodec output directly to the Surface.
+                    MPVLib.setOptionString("vo", "mediacodec_embed");
                 } catch (Throwable ignored) {}
                 surfaceReady = true;
                 maybeStartPlayback();
@@ -185,8 +187,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             MPVLib.setOptionString("force-window", "no");
             MPVLib.setOptionString("gpu-context", "android");
             MPVLib.setOptionString("opengl-es", "yes");
-            // mediacodec-copy falls back gracefully where zero-copy fails
-            MPVLib.setOptionString("hwdec", "mediacodec,mediacodec-copy");
+            // Use mediacodec (zero-copy) with mediacodec_embed VO. Avoid mediacodec-copy
+            // which goes through the GPU and causes Mali faults.
+            MPVLib.setOptionString("hwdec", "mediacodec");
             MPVLib.setOptionString("ao", "audiotrack,opensles");
             MPVLib.setOptionString("audio-channels", "stereo");
             MPVLib.setOptionString("cache", "yes");
@@ -234,8 +237,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         try {
             double pos = MPVLib.getPropertyDouble("time-pos");
             double dur = MPVLib.getPropertyDouble("duration");
-            if (dur > 0) {
-                seekBar.setProgress((int) (pos * 1000 / dur));
+            // Require dur > 1.0s to avoid tiny/unstable duration values placing
+            // the thumb at the end (pos*1000/dur overflows when dur is ~0).
+            if (dur > 1.0 && pos >= 0) {
+                int prog = (int) (pos * 1000 / dur);
+                if (prog < 0) prog = 0;
+                if (prog > 1000) prog = 1000;
+                seekBar.setProgress(prog);
                 timeView.setText(fmt((long)(pos*1000)) + " / " + fmt((long)(dur*1000)));
             }
             // Hide loading once we have video
