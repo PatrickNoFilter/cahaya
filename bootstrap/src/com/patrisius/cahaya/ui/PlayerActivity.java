@@ -137,6 +137,15 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         controller.setBackgroundColor(0x99000000); // Semi-transparent black
         controller.setVisibility(View.GONE);
 
+        // Helper: Add focus highlight to buttons (orange background when focused via D-pad)
+        android.view.View.OnFocusChangeListener focusHighlight = (v, hasFocus) -> {
+            if (hasFocus) {
+                v.setBackgroundColor(0xFFE8A33D); // Orange/gold accent
+            } else {
+                v.setBackgroundColor(0x00000000); // Transparent
+            }
+        };
+
         // Top bar: Back + Title (top-left, like YouTube)
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -146,6 +155,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         backBtn.setText("◀");
         backBtn.setTextSize(20);
         backBtn.setFocusable(true);
+        backBtn.setOnFocusChangeListener(focusHighlight);
         backBtn.setOnClickListener(v -> finish());
         topBar.addView(backBtn);
         titleView = new TextView(this);
@@ -172,6 +182,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         rewindBtn.setText("⏪");
         rewindBtn.setTextSize(36);
         rewindBtn.setFocusable(true);
+        rewindBtn.setOnFocusChangeListener(focusHighlight);
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(dp(88), dp(88));
         rlp.setMargins(0, 0, dp(32), 0);
         rewindBtn.setOnClickListener(v -> {
@@ -186,6 +197,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         playPauseBtn.setText("⏸");
         playPauseBtn.setTextSize(48);
         playPauseBtn.setFocusable(true);
+        playPauseBtn.setOnFocusChangeListener(focusHighlight);
         LinearLayout.LayoutParams pblp = new LinearLayout.LayoutParams(dp(112), dp(112));
         playPauseBtn.setOnClickListener(v -> togglePlay());
         centerConsole.addView(playPauseBtn, pblp);
@@ -194,6 +206,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         forwardBtn.setText("⏩");
         forwardBtn.setTextSize(36);
         forwardBtn.setFocusable(true);
+        forwardBtn.setOnFocusChangeListener(focusHighlight);
         LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(dp(88), dp(88));
         flp.setMargins(dp(32), 0, 0, 0);
         forwardBtn.setOnClickListener(v -> {
@@ -203,6 +216,47 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             setControllerVisible(true);
         });
         centerConsole.addView(forwardBtn, flp);
+
+        // CC (subtitle) toggle button with state indicator
+        Button ccBtn = new Button(this);
+        ccBtn.setText("CC");
+        ccBtn.setTextSize(24);
+        ccBtn.setFocusable(true);
+        ccBtn.setOnFocusChangeListener(focusHighlight);
+        LinearLayout.LayoutParams cclp = new LinearLayout.LayoutParams(dp(88), dp(88));
+        cclp.setMargins(dp(32), 0, 0, 0);
+        // Track subtitle state
+        final boolean[] subtitlesOn = {false};
+        ccBtn.setOnClickListener(v -> {
+            subtitlesOn[0] = !subtitlesOn[0];
+            if (subtitlesOn[0]) {
+                MPVLib.command(new String[]{"set", "sub-visibility", "yes"});
+                ccBtn.setBackgroundColor(0xFFE8A33D); // Orange when active
+                ccBtn.setTextColor(Color.BLACK);
+            } else {
+                MPVLib.command(new String[]{"set", "sub-visibility", "no"});
+                ccBtn.setBackgroundColor(0x00000000); // Transparent when inactive
+                ccBtn.setTextColor(Color.WHITE);
+            }
+            setControllerVisible(true);
+        });
+        // When focused, show focus highlight; when active, show orange
+        ccBtn.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) {
+                v.setBackgroundColor(0xFFE8A33D);
+                ((Button)v).setTextColor(Color.BLACK);
+            } else {
+                // Restore state-based color
+                if (subtitlesOn[0]) {
+                    v.setBackgroundColor(0xFFE8A33D);
+                    ((Button)v).setTextColor(Color.BLACK);
+                } else {
+                    v.setBackgroundColor(0x00000000);
+                    ((Button)v).setTextColor(Color.WHITE);
+                }
+            }
+        });
+        centerConsole.addView(ccBtn, cclp);
 
         FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -232,6 +286,30 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         seekBar = new SeekBar(this);
         seekBar.setMax(1000);
         seekBar.setEnabled(false);
+        seekBar.setFocusable(true);
+        // Focus indicator for seekbar: scale up slightly when focused
+        seekBar.setOnFocusChangeListener((v, hasFocus) -> {
+            v.setScaleY(hasFocus ? 1.5f : 1.0f);
+        });
+        // D-pad left/right on seekbar seeks ±10s when duration is known
+        seekBar.setOnKeyListener((v, keyCode, event) -> {
+            if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_LEFT) {
+                    MPVLib.command(new String[]{"seek", String.valueOf(-SEEK_S)});
+                    manualPos = Math.max(0, manualPos - SEEK_S);
+                    main.post(() -> updateProgress());
+                    setControllerVisible(true);
+                    return true;
+                } else if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    MPVLib.command(new String[]{"seek", String.valueOf(SEEK_S)});
+                    manualPos += SEEK_S;
+                    main.post(() -> updateProgress());
+                    setControllerVisible(true);
+                    return true;
+                }
+            }
+            return false;
+        });
         bottomBar.addView(seekBar);
 
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
