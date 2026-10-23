@@ -112,6 +112,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private List<SubtitleItem> onlineRanked = new ArrayList<>();
     private final Set<String> addedUrls = new HashSet<>();
     private boolean subsLoading, onlineExpanded, autoSubDone;
+    private int selectedSubId = -1; // -1 = off, -2 = unknown (read from mpv), else track id
     private int subDelayMs, aspectMode, speedIdx = 2;
 
     private final Runnable hideController = this::hideControllerNow;
@@ -649,8 +650,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
         panel.begin("Subtitles");
         List<MpvTrack> tracks = MpvTrack.read("sub");
+        // Use our tracked selection if set, else fall back to mpv's reported state
         boolean anySelected = false;
-        for (MpvTrack t : tracks) if (t.selected) anySelected = true;
+        if (selectedSubId >= 0) {
+            for (MpvTrack t : tracks) if (t.id == selectedSubId) { t.selected = true; anySelected = true; }
+        } else if (selectedSubId == -2) {
+            for (MpvTrack t : tracks) if (t.selected) anySelected = true;
+        }
+        // selectedSubId == -1 means Off
 
         final boolean off = !anySelected;
         panel.row("Off", null, off, () -> { disableSubtitles(); autoSubDone = true; rebuildPanel(); });
@@ -699,6 +706,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             MPVLib.setPropertyBoolean("sub-visibility", true);
             MPVLib.setPropertyString("sid", String.valueOf(t.id));
         } catch (Throwable ignored) {}
+        selectedSubId = t.id;
         hint("Subtitles: " + t.label());
         updateSubsButton(true);
     }
@@ -708,6 +716,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             MPVLib.setPropertyString("sid", "no");
             MPVLib.setPropertyBoolean("sub-visibility", false);
         } catch (Throwable ignored) {}
+        selectedSubId = -1;
         hint("Subtitles off");
         updateSubsButton(false);
     }
@@ -728,6 +737,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                         MPVLib.command(new String[]{"sub-add", f.getAbsolutePath(), "cached",
                                 LangUtil.display(s.lang), l.isEmpty() ? "und" : l});
                         MPVLib.setPropertyBoolean("sub-visibility", true);
+                        // Find the newly added track (highest ID) and select it
+                        List<MpvTrack> tracks = MpvTrack.read("sub");
+                        int maxId = -1;
+                        for (MpvTrack t : tracks) if (t.id > maxId) maxId = t.id;
+                        if (maxId >= 0) {
+                            MPVLib.setPropertyString("sid", String.valueOf(maxId));
+                            selectedSubId = maxId;
+                        }
                     } catch (Throwable ignored) {}
                     autoSubDone = true;
                     hint("Subtitles: " + LangUtil.display(s.lang));
