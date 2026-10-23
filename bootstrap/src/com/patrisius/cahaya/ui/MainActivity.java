@@ -150,6 +150,24 @@ public class MainActivity extends Activity {
             menuLabels.add(label);
         }
 
+        // Version label at bottom of sidebar
+        TextView versionLabel = new TextView(this);
+        try {
+            String ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            versionLabel.setText("v" + ver);
+        } catch (Exception e) {
+            versionLabel.setText("v?");
+        }
+        versionLabel.setTextSize(12);
+        versionLabel.setTextColor(Color.parseColor("#888888"));
+        versionLabel.setPadding(dp(16), dp(8), dp(16), dp(16));
+        versionLabel.setGravity(android.view.Gravity.BOTTOM);
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0, 1f);
+        vlp.gravity = android.view.Gravity.BOTTOM;
+        sidebar.addView(versionLabel, vlp);
+
         LinearLayout contentCol = new LinearLayout(this);
         contentCol.setOrientation(LinearLayout.VERTICAL);
         root.addView(contentCol, new LinearLayout.LayoutParams(
