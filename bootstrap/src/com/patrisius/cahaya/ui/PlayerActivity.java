@@ -42,6 +42,7 @@ import com.patrisius.cahaya.ui.player.ScrubRates;
 import com.patrisius.cahaya.ui.player.SeekTrack;
 import com.patrisius.cahaya.ui.player.SidePanel;
 import com.patrisius.cahaya.ui.player.SubtitleLoader;
+import com.patrisius.cahaya.ui.player.SubtitleOverlay;
 import com.patrisius.cahaya.ui.player.SubtitlePrefs;
 import com.patrisius.cahaya.ui.player.SubtitleRanker;
 import com.patrisius.cahaya.ui.player.TimeFmt;
@@ -91,6 +92,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private SeekTrack seek;
     private TextView timeCur, timeDur, titleView;
     private SidePanel panel;
+    private SubtitleOverlay subtitleOverlay;
     private View panelOpener;
 
     // ---- intent
@@ -176,6 +178,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        if (subtitleOverlay != null) subtitleOverlay.stop();
         super.onDestroy();
         main.removeCallbacksAndMessages(null);
         try {
@@ -341,6 +344,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panel = new SidePanel(this);
         root.addView(panel, new FrameLayout.LayoutParams(dp(420), -1, Gravity.END));
 
+        // Subtitle overlay (Android TextView, works with mediacodec_embed)
+        subtitleOverlay = new SubtitleOverlay(this, root);
+
         setContentView(root);
     }
 
@@ -415,6 +421,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             manualPos = 0;
             mpvTimePos = -1;
             mpvDuration = -1;
+            if (subtitleOverlay != null) subtitleOverlay.start();
             try {
                 MPVLib.command(new String[]{"loadfile", streamUrl});
             } catch (Throwable t) {
