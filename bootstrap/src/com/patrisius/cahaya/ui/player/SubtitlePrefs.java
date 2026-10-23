@@ -34,7 +34,7 @@ public class SubtitlePrefs {
         background = sp.getBoolean("sub_bg", false);
         stripSdh = sp.getBoolean("sub_sdh", false);
         preferredLang = sp.getString("sub_lang", defaultLang());
-        gpuRenderer = sp.getBoolean("gpu_renderer", true);
+        gpuRenderer = sp.getBoolean("gpu_renderer", false); // Default false: vo=gpu faults on Mali (B866F)
     }
 
     private static String defaultLang() {
