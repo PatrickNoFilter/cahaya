@@ -15,6 +15,14 @@ public class MpvTrack {
     public boolean external, forced, isDefault, selected;
     public int channels;
 
+    /** Bitmap subtitle formats cannot be turned into text, so the overlay cannot show them. */
+    public boolean isImage() {
+        if (codec == null) return false;
+        String c = codec.toLowerCase(java.util.Locale.ROOT);
+        return c.equals("hdmv_pgs_subtitle") || c.equals("dvd_subtitle")
+                || c.equals("dvb_subtitle") || c.equals("xsub") || c.equals("dvb_teletext");
+    }
+
     /** Main line of a picker row: "English", plus the title when it adds information. */
     public String label() {
         String name = (lang == null || lang.isEmpty()) ? null : LangUtil.display(lang);
@@ -29,6 +37,7 @@ public class MpvTrack {
         List<String> p = new ArrayList<>();
         if (codec != null && !codec.isEmpty()) p.add(prettyCodec(codec));
         if (channels > 0) p.add(channels == 2 ? "Stereo" : channels == 6 ? "5.1" : channels == 8 ? "7.1" : channels + " ch");
+        if (isImage()) p.add("Image, can't display");
         if (forced) p.add("Forced");
         if (isDefault) p.add("Default");
         if (external) p.add("External");

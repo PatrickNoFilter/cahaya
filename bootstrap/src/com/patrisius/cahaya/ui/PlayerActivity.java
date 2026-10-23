@@ -112,7 +112,6 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private List<SubtitleItem> onlineRanked = new ArrayList<>();
     private final Set<String> addedUrls = new HashSet<>();
     private boolean subsLoading, onlineExpanded, autoSubDone;
-    private int selectedSubId = -1; // -1 = off, -2 = unknown (read from mpv), else track id
     private int subDelayMs, aspectMode, speedIdx = 2;
 
     private final Runnable hideController = this::hideControllerNow;
@@ -147,11 +146,21 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         startPos = getIntent().getDoubleExtra("start_pos", 0);
         prefs = new SubtitlePrefs(this);
 
-        String legacy = getIntent().getStringExtra("sub_url");
-        if (legacy != null && !legacy.isEmpty()) {
-            onlineRaw.add(new SubtitleItem(legacy, prefs.preferredLang, prefs.preferredLang + " · provided"));
-            onlineRanked = SubtitleRanker.rank(onlineRaw, prefs.preferredLang);
+        String[] subUrls = getIntent().getStringArrayExtra("sub_urls");
+        String[] subLangs = getIntent().getStringArrayExtra("sub_langs");
+        String[] subLabels = getIntent().getStringArrayExtra("sub_labels");
+        if (subUrls != null) {
+            for (int i = 0; i < subUrls.length; i++) {
+                String l = subLangs != null && i < subLangs.length ? subLangs[i] : "?";
+                String lab = subLabels != null && i < subLabels.length ? subLabels[i] : l;
+                onlineRaw.add(new SubtitleItem(subUrls[i], l, lab));
+            }
+        } else {
+            String legacy = getIntent().getStringExtra("sub_url");
+            if (legacy != null && !legacy.isEmpty())
+                onlineRaw.add(new SubtitleItem(legacy, prefs.preferredLang, prefs.preferredLang + " · provided"));
         }
+        onlineRanked = SubtitleRanker.rank(onlineRaw, prefs.preferredLang);
 
         buildUi();
         initPlayer();
@@ -204,15 +213,12 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 try {
                     MPVLib.attachSurface(holder.getSurface());
                     MPVLib.setOptionString("force-window", "yes");
-                    MPVLib.setPropertyString("vo", prefs.gpuRenderer ? "gpu" : "mediacodec_embed");
+                    MPVLib.setPropertyString("vo", "mediacodec_embed");
                 } catch (Throwable ignored) {}
                 surfaceReady = true;
                 maybeStartPlayback();
             }
-            @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int ht) {
-                if (!prefs.gpuRenderer) return;
-                try { MPVLib.setPropertyString("android-surface-size", w + "x" + ht); } catch (Throwable ignored) {}
-            }
+            @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int ht) {}
             @Override public void surfaceDestroyed(SurfaceHolder holder) {
                 surfaceReady = false;
                 try {
@@ -345,8 +351,8 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panel = new SidePanel(this);
         root.addView(panel, new FrameLayout.LayoutParams(dp(420), -1, Gravity.END));
 
-        // Subtitle overlay (Android TextView, works with mediacodec_embed)
-        subtitleOverlay = new SubtitleOverlay(this, root);
+        // Subtitle overlay (drawn by us; mediacodec_embed cannot draw subtitles)
+        subtitleOverlay = new SubtitleOverlay(this, root, prefs);
 
         setContentView(root);
     }
@@ -380,8 +386,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             MPVLib.setOptionString("force-window", "no");
             MPVLib.setOptionString("gpu-context", "android");
             MPVLib.setOptionString("opengl-es", "yes");
-            // mediacodec_embed (prefs.gpuRenderer == false) cannot draw subtitles; vo=gpu can.
-            MPVLib.setOptionString("hwdec", prefs.gpuRenderer ? "mediacodec,mediacodec-copy" : "mediacodec");
+            // Direct MediaCodec -> Surface output. vo=gpu faults on the target Mali boxes.
+            // mpv cannot draw subtitles on this path; SubtitleOverlay does it from "sub-text".
+            MPVLib.setOptionString("hwdec", "mediacodec");
             MPVLib.setOptionString("ao", "audiotrack,opensles");
             MPVLib.setOptionString("audio-channels", "stereo");
             MPVLib.setOptionString("cache", "yes");
@@ -406,6 +413,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             MPVLib.observeProperty("pause", 3);
             MPVLib.observeProperty("paused-for-cache", 3);
             MPVLib.observeProperty("track-list", 0);
+            MPVLib.observeProperty("sub-text", 1);     // 1 = string; drives SubtitleOverlay
 
             prefs.applyToMpv();
             main.post(progressTick);
@@ -507,6 +515,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             controller.setAlpha(1f);
             if (getCurrentFocus() == null) playBtn.requestFocus();
         }
+        subtitleOverlay.setLifted(true);
         scheduleHide();
     }
 
@@ -518,6 +527,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void hideControllerNow() {
         if (panel.isOpen() || controller.getVisibility() != View.VISIBLE) return;
         if (paused) return;                       // stay visible while paused
+        subtitleOverlay.setLifted(false);
         controller.animate().alpha(0f).setDuration(200).withEndAction(() -> {
             if (!paused) controller.setVisibility(View.GONE);
         }).start();
@@ -614,12 +624,15 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panelOpener = opener;
         main.removeCallbacks(hideController);
         controller.setVisibility(View.GONE);
+        subtitleOverlay.setLifted(false);
+        subtitleOverlay.setPreview(kind == P_STYLE);
         rebuildPanel();
     }
 
     private void closePanel() {
         main.removeCallbacks(refreshPanel);
         panel.hide();
+        subtitleOverlay.setPreview(false);
         panelKind = P_NONE;
         showController();
         if (panelOpener != null) panelOpener.requestFocus();
@@ -650,17 +663,8 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
         panel.begin("Subtitles");
         List<MpvTrack> tracks = MpvTrack.read("sub");
-        // Use our tracked selection if set, else fall back to mpv's reported state
         boolean anySelected = false;
-        if (selectedSubId >= 0) {
-            for (MpvTrack t : tracks) {
-                t.selected = (t.id == selectedSubId);
-                if (t.selected) anySelected = true;
-            }
-        } else if (selectedSubId == -2) {
-            for (MpvTrack t : tracks) if (t.selected) anySelected = true;
-        }
-        // selectedSubId == -1 means Off
+        for (MpvTrack t : tracks) if (t.selected) anySelected = true;
 
         final boolean off = !anySelected;
         panel.row("Off", null, off, () -> { disableSubtitles(); autoSubDone = true; rebuildPanel(); });
@@ -700,26 +704,32 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panel.section("Adjust");
         panel.stepper("Delay", () -> TimeFmt.delay(subDelayMs), dir -> changeDelay(dir * 100),
                 () -> { subDelayMs = 0; applyDelay(); });
-        panel.row("Appearance", "Size, colour, height, background", false, () -> { panelKind = P_STYLE; rebuildPanel(); });
+        panel.row("Appearance", "Size, colour, outline, background, height", false, () -> {
+            panelKind = P_STYLE;
+            subtitleOverlay.setPreview(true);
+            rebuildPanel();
+        });
         panel.end(restore);
     }
 
     private void selectSubtitle(MpvTrack t) {
+        subtitleOverlay.clear();
+        subtitleOverlay.setSubtitlesOn(true);
         try {
             MPVLib.setPropertyBoolean("sub-visibility", true);
             MPVLib.setPropertyString("sid", String.valueOf(t.id));
         } catch (Throwable ignored) {}
-        selectedSubId = t.id;
-        hint("Subtitles: " + t.label());
+        hint(t.isImage() ? "Image subtitles can't be displayed with this renderer"
+                : "Subtitles: " + t.label());
         updateSubsButton(true);
     }
 
     private void disableSubtitles() {
+        subtitleOverlay.setSubtitlesOn(false);
         try {
             MPVLib.setPropertyString("sid", "no");
             MPVLib.setPropertyBoolean("sub-visibility", false);
         } catch (Throwable ignored) {}
-        selectedSubId = -1;
         hint("Subtitles off");
         updateSubsButton(false);
     }
@@ -740,15 +750,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                         MPVLib.command(new String[]{"sub-add", f.getAbsolutePath(), "cached",
                                 LangUtil.display(s.lang), l.isEmpty() ? "und" : l});
                         MPVLib.setPropertyBoolean("sub-visibility", true);
-                        // Find the newly added track (highest ID) and select it
-                        List<MpvTrack> tracks = MpvTrack.read("sub");
-                        int maxId = -1;
-                        for (MpvTrack t : tracks) if (t.id > maxId) maxId = t.id;
-                        if (maxId >= 0) {
-                            MPVLib.setPropertyString("sid", String.valueOf(maxId));
-                            selectedSubId = maxId;
-                        }
                     } catch (Throwable ignored) {}
+                    subtitleOverlay.clear();
+                    subtitleOverlay.setSubtitlesOn(true);
                     autoSubDone = true;
                     hint("Subtitles: " + LangUtil.display(s.lang));
                     updateSubsButton(true);
@@ -779,10 +783,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         if ("off".equals(pl)) { autoSubDone = true; return; }
         List<MpvTrack> subs = MpvTrack.read("sub");
         for (MpvTrack t : subs) {
-            if (t.selected) { autoSubDone = true; updateSubsButton(true); return; }   // mpv's own slang pick
+            // mpv's own slang pick, unless it chose a bitmap track we cannot draw
+            if (t.selected && !t.isImage()) { autoSubDone = true; updateSubsButton(true); return; }
         }
         MpvTrack pick = null;
-        for (MpvTrack t : subs) if (LangUtil.matches(t.lang, pl) && !t.forced) { pick = t; break; }
+        for (MpvTrack t : subs) if (LangUtil.matches(t.lang, pl) && !t.forced && !t.isImage()) { pick = t; break; }
         if (pick != null) { selectSubtitle(pick); autoSubDone = true; return; }
         SubtitleItem best = SubtitleRanker.bestFor(onlineRanked, pl);
         if (best != null && !addedUrls.contains(best.url)) { addOnlineSubtitle(best); autoSubDone = true; return; }
@@ -826,27 +831,39 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void buildStylePanel() {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
         panel.begin("Subtitle appearance");
+        panel.note("Changes show live in the sample text.");
         panel.stepper("Size", () -> prefs.size + "%", dir -> {
             prefs.size = Math.max(SubtitlePrefs.SIZE_MIN, Math.min(SubtitlePrefs.SIZE_MAX,
                     prefs.size + dir * SubtitlePrefs.SIZE_STEP));
             styleChanged();
-        }, null);
+        }, () -> { prefs.size = SubtitlePrefs.SIZE_DEFAULT; styleChanged(); });
         panel.stepper("Height", () -> prefs.lift == 0 ? "Bottom" : "+" + prefs.lift, dir -> {
             prefs.lift = Math.max(SubtitlePrefs.LIFT_MIN, Math.min(SubtitlePrefs.LIFT_MAX, prefs.lift + dir * 2));
             styleChanged();
-        }, null);
+        }, () -> { prefs.lift = SubtitlePrefs.LIFT_DEFAULT; styleChanged(); });
         panel.stepper("Colour", () -> {
-            SpannableString s = new SpannableString("●  " + SubtitlePrefs.COLOR_NAMES[prefs.colorIdx]);
-            s.setSpan(new ForegroundColorSpan(SubtitlePrefs.COLORS[prefs.colorIdx]), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            return s;
+            SpannableString sp = new SpannableString("\u25CF  " + SubtitlePrefs.COLOR_NAMES[prefs.colorIdx]);
+            sp.setSpan(new ForegroundColorSpan(SubtitlePrefs.COLORS[prefs.colorIdx]), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            return sp;
         }, dir -> {
             int n = SubtitlePrefs.COLORS.length;
             prefs.colorIdx = (prefs.colorIdx + dir + n) % n;
             styleChanged();
         }, null);
         toggle("Bold", () -> prefs.bold, v -> prefs.bold = v);
-        toggle("Outline", () -> prefs.outline, v -> prefs.outline = v);
+        panel.stepper("Edge", () -> SubtitlePrefs.EDGE_NAMES[prefs.edge], dir -> {
+            int n = SubtitlePrefs.EDGE_NAMES.length;
+            prefs.edge = (prefs.edge + dir + n) % n;
+            styleChanged();
+        }, null);
         toggle("Background box", () -> prefs.background, v -> prefs.background = v);
+        if (prefs.background) {
+            panel.stepper("Background opacity", () -> prefs.bgOpacity + "%", dir -> {
+                prefs.bgOpacity = Math.max(SubtitlePrefs.OPACITY_MIN, Math.min(SubtitlePrefs.OPACITY_MAX,
+                        prefs.bgOpacity + dir * SubtitlePrefs.OPACITY_STEP));
+                styleChanged();
+            }, null);
+        }
         toggle("Hide SDH text", () -> prefs.stripSdh, v -> prefs.stripSdh = v);
 
         panel.section("Behaviour");
@@ -857,7 +874,6 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             prefs.preferredLang = choices.get((i + dir + choices.size()) % choices.size());
             prefs.save();
         }, null);
-        toggle("GPU renderer", () -> prefs.gpuRenderer, this::setRenderer);
         panel.row("Reset appearance", null, false, () -> { prefs.resetStyle(); styleChanged(); rebuildPanel(); });
         panel.end(restore);
     }
@@ -865,27 +881,26 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private interface BoolGet { boolean get(); }
     private interface BoolSet { void set(boolean v); }
 
+    /** On/Off row. A change that adds or removes other rows (background -> opacity) rebuilds the panel. */
     private void toggle(String label, final BoolGet get, final BoolSet set) {
-        final Runnable flip = () -> { set.set(!get.get()); styleChanged(); };
+        final Runnable flip = () -> {
+            set.set(!get.get());
+            styleChanged();
+            if (panelKind == P_STYLE) schedulePanelRebuild();
+        };
         panel.stepper(label, () -> get.get() ? "On" : "Off", dir -> flip.run(), flip);
     }
 
+    private void schedulePanelRebuild() {
+        main.removeCallbacks(refreshPanel);
+        main.postDelayed(refreshPanel, 60);
+    }
+
+    /** Save, push the mpv-side bits, and redraw the on-screen subtitle with the new look. */
     private void styleChanged() {
         prefs.save();
         prefs.applyToMpv();
-    }
-
-    /** Switch between vo=gpu (draws subtitles) and mediacodec_embed (cannot), live. */
-    private void setRenderer(boolean gpu) {
-        if (prefs.gpuRenderer == gpu) return;
-        prefs.gpuRenderer = gpu;
-        prefs.save();
-        try {
-            MPVLib.setPropertyString("hwdec", gpu ? "mediacodec,mediacodec-copy" : "mediacodec");
-            MPVLib.setPropertyString("vo", gpu ? "gpu" : "mediacodec_embed");
-        } catch (Throwable ignored) {}
-        hint(gpu ? "GPU renderer (subtitles on)" : "Direct renderer (no subtitles)");
-        rebuildPanel();
+        subtitleOverlay.applyStyle();
     }
 
     // ---- audio / speed ---------------------------------------------------
@@ -927,6 +942,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     @Override public void eventProperty(String property) {
         if ("track-list".equals(property)) main.post(this::schedulePanelRefresh);
+        else if ("sub-text".equals(property)) subtitleOverlay.onText("");   // unavailable = no subtitle now
     }
     @Override public void eventProperty(String property, long value) {}
     @Override public void eventProperty(String property, double value) {
@@ -949,7 +965,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             main.post(() -> { buffering = value; updateProgress(); });
         }
     }
-    @Override public void eventProperty(String property, String value) {}
+    @Override public void eventProperty(String property, String value) {
+        if ("sub-text".equals(property)) subtitleOverlay.onText(value);
+    }
     @Override public void event(int eventId) {
         if (eventId == 8) main.post(this::onFileLoaded);          // MPV_EVENT_FILE_LOADED
         else if (eventId == 7) main.post(this::finish);           // MPV_EVENT_END_FILE
