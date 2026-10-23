@@ -653,7 +653,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         // Use our tracked selection if set, else fall back to mpv's reported state
         boolean anySelected = false;
         if (selectedSubId >= 0) {
-            for (MpvTrack t : tracks) if (t.id == selectedSubId) { t.selected = true; anySelected = true; }
+            for (MpvTrack t : tracks) {
+                t.selected = (t.id == selectedSubId);
+                if (t.selected) anySelected = true;
+            }
         } else if (selectedSubId == -2) {
             for (MpvTrack t : tracks) if (t.selected) anySelected = true;
         }
