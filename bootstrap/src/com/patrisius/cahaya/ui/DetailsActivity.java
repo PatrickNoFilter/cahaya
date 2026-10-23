@@ -338,8 +338,7 @@ public class DetailsActivity extends Activity {
                     public void onReady(String httpUrl, String fileName) {
                         main.post(() -> {
                             if (dlg.isShowing()) dlg.dismiss();
-                            // Subtitles for this video, if any addon has them.
-                            findSubtitles(videoId, fileName, httpUrl, title);
+                            launchTorrentPlayer(httpUrl, title, videoId);
                         });
                     }
 
@@ -354,57 +353,17 @@ public class DetailsActivity extends Activity {
                 });
     }
 
-    /** Look up subtitles, then launch the player with the torrent's http URL. */
-    private void findSubtitles(String videoId, String fileName, String httpUrl,
-                               String title) {
-        final java.util.List<SubtitleItem> subs = new java.util.ArrayList<>();
-        final java.util.List<String> addonUrls = new java.util.ArrayList<>(mgr.addonUrls());
-        final java.util.concurrent.atomic.AtomicInteger pending =
-                new java.util.concurrent.atomic.AtomicInteger(addonUrls.size());
-        final java.util.concurrent.atomic.AtomicBoolean launched =
-                new java.util.concurrent.atomic.AtomicBoolean(false);
-        final Runnable launchOnce = () -> {
-            if (launched.compareAndSet(false, true)) {
-                String subUrl = subs.isEmpty() ? null : subs.get(0).url;
-                main.post(() -> launchTorrentPlayer(httpUrl, title, subUrl));
-            }
-        };
-        if (pending.get() == 0) {
-            launchOnce.run();
-            return;
-        }
-        final Runnable done = () -> {
-            if (pending.decrementAndGet() > 0) return;
-            launchOnce.run();
-        };
-        // Timeout: don't wait forever for slow/hanging subtitle addons.
-        main.postDelayed(launchOnce, 8000);
-        for (String base : addonUrls) {
-            mgr.subtitles(base, itemType, videoId,
-                    new AddonManager.Callback<java.util.List<SubtitleItem>>() {
-                        @Override
-                        public void onResult(java.util.List<SubtitleItem> items) {
-                            synchronized (subs) {
-                                subs.addAll(items);
-                            }
-                            main.post(done);
-                        }
-
-                        @Override
-                        public void onError(Exception e) {
-                            main.post(done);
-                        }
-                    });
-        }
-    }
-
-    private void launchTorrentPlayer(String httpUrl, String title, String subUrl) {
+    /**
+     * Launch the player straight away with the torrent's local http URL. Subtitles are no longer
+     * looked up here: PlayerActivity searches every addon/plugin itself using type + video_id,
+     * so playback starts immediately and the subtitle list fills in while the user watches.
+     */
+    private void launchTorrentPlayer(String httpUrl, String title, String videoId) {
         Intent i = new Intent(DetailsActivity.this, PlayerActivity.class);
         i.putExtra("url", httpUrl);
         i.putExtra("title", title);
         i.putExtra("type", itemType);
-        i.putExtra("video_id", "");
-        if (subUrl != null) i.putExtra("sub_url", subUrl);
+        i.putExtra("video_id", videoId);
         startActivity(i);
     }
 
