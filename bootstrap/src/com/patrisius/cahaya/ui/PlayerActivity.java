@@ -652,10 +652,6 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         boolean anySelected = false;
         for (MpvTrack t : tracks) if (t.selected) anySelected = true;
 
-        if (!prefs.gpuRenderer) {
-            panel.note("The direct video renderer can't draw subtitles.");
-            panel.row("Switch to GPU renderer", "Required for subtitles", false, () -> setRenderer(true));
-        }
         final boolean off = !anySelected;
         panel.row("Off", null, off, () -> { disableSubtitles(); autoSubDone = true; rebuildPanel(); });
 
