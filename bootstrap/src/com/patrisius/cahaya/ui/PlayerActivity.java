@@ -110,7 +110,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     private final List<SubtitleItem> onlineRaw = new ArrayList<>();
     private List<SubtitleItem> onlineRanked = new ArrayList<>();
-    private final Set<String> addedUrls = new HashSet<>();
+    /** Online subtitles currently downloading (guards double clicks). */
+    private final Set<String> loadingUrls = new HashSet<>();
+    /** Online subtitle URL -> the mpv track id it was loaded as. Keeps it listed (and tickable) after use. */
+    private final Map<String, Integer> onlineTrackId = new HashMap<>();
+    private static final int SEL_UNKNOWN = -2, SEL_OFF = -1;
+    /** What WE last selected (track id, or SEL_OFF). SEL_UNKNOWN = trust mpv's own "sid". */
+    private int ownSubSel = SEL_UNKNOWN;
     private boolean subsLoading, onlineExpanded, autoSubDone;
     private int subDelayMs, aspectMode, speedIdx = 2;
 
@@ -663,38 +669,49 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
         panel.begin("Subtitles");
         List<MpvTrack> tracks = MpvTrack.read("sub");
-        boolean anySelected = false;
-        for (MpvTrack t : tracks) if (t.selected) anySelected = true;
+        final int sel = currentSubSel(tracks);
 
-        final boolean off = !anySelected;
-        panel.row("Off", null, off, () -> { disableSubtitles(); autoSubDone = true; rebuildPanel(); });
+        panel.row("Off", null, sel == SEL_OFF, () -> { disableSubtitles(); autoSubDone = true; rebuildPanel(); });
 
-        if (!tracks.isEmpty()) {
+        // Built-in tracks only; online subtitles that mpv loaded as external tracks stay in the Online list.
+        List<MpvTrack> builtIn = new ArrayList<>();
+        for (MpvTrack t : tracks) if (!onlineTrackId.containsValue(t.id)) builtIn.add(t);
+        if (!builtIn.isEmpty()) {
             panel.section("In this video");
-            for (final MpvTrack t : tracks)
-                panel.row(t.label(), t.detail(), t.selected, () -> { selectSubtitle(t); autoSubDone = true; rebuildPanel(); });
+            int text = 0, image = 0;
+            for (final MpvTrack t : builtIn) {
+                if (t.isImage()) image++; else text++;
+                panel.row(t.label(), t.detail(), t.id == sel, () -> { selectSubtitle(t); autoSubDone = true; rebuildPanel(); });
+            }
+            if (image > 0 && text == 0)
+                panel.note("These built-in subtitles are image-based (PGS / VobSub). The direct video renderer can't draw them, so use an online subtitle below.");
+            else if (image > 0)
+                panel.note("Tracks marked \"Image\" can't be drawn by the direct video renderer.");
         }
 
         panel.section("Online subtitles");
         if (subsLoading) panel.note("Searching your addons…");
-        List<SubtitleItem> shown = new ArrayList<>();
-        for (SubtitleItem s : onlineRanked) if (!addedUrls.contains(s.url)) shown.add(s);
+        List<SubtitleItem> shown = new ArrayList<>(onlineRanked);
         if (shown.isEmpty() && !subsLoading) {
             panel.note(videoId == null || videoId.isEmpty()
                     ? "Online search isn't available for this stream."
                     : "None found. Install a subtitle addon from Cahaya's addon screen.");
         }
+        // Keep the one in use visible even when the list is collapsed.
         int limit = onlineExpanded ? shown.size() : Math.min(ONLINE_LIMIT, shown.size());
         Map<String, Integer> perLang = new HashMap<>();
-        for (int i = 0; i < limit; i++) {
+        for (int i = 0; i < shown.size(); i++) {
             final SubtitleItem s = shown.get(i);
             String lang = LangUtil.display(s.lang);
             int n = perLang.containsKey(lang) ? perLang.get(lang) + 1 : 1;
             perLang.put(lang, n);
+            Integer tid = onlineTrackId.get(s.url);
+            boolean active = tid != null && tid == sel;
+            if (i >= limit && !active) continue;
             String detail = s.label == null ? "" : s.label;
             int cut = detail.indexOf("· ");
             if (cut >= 0) detail = detail.substring(cut + 2);
-            panel.row(n > 1 ? lang + " " + n : lang, detail, false, () -> addOnlineSubtitle(s));
+            panel.row(n > 1 ? lang + " " + n : lang, detail, active, () -> useOnlineSubtitle(s));
         }
         if (limit < shown.size()) {
             final int more = shown.size() - limit;
@@ -712,7 +729,20 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panel.end(restore);
     }
 
+    /** Which subtitle is showing: our own last choice if we made one, otherwise whatever mpv picked. */
+    private int currentSubSel(List<MpvTrack> tracks) {
+        if (ownSubSel != SEL_UNKNOWN) {
+            boolean exists = false;
+            for (MpvTrack t : tracks) if (t.id == ownSubSel) exists = true;
+            if (ownSubSel == SEL_OFF || exists) return ownSubSel;
+            ownSubSel = SEL_UNKNOWN;
+        }
+        for (MpvTrack t : tracks) if (t.selected) return t.id;
+        return SEL_OFF;
+    }
+
     private void selectSubtitle(MpvTrack t) {
+        ownSubSel = t.id;
         subtitleOverlay.clear();
         subtitleOverlay.setSubtitlesOn(true);
         try {
@@ -725,6 +755,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     }
 
     private void disableSubtitles() {
+        ownSubSel = SEL_OFF;
         subtitleOverlay.setSubtitlesOn(false);
         try {
             MPVLib.setPropertyString("sid", "no");
@@ -736,14 +767,33 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     private void updateSubsButton(boolean on) { subsBtn.setActive(on); }
 
+    /** Clicked an online subtitle: switch to it if already loaded, otherwise download and add it. */
+    private void useOnlineSubtitle(SubtitleItem s) {
+        Integer id = onlineTrackId.get(s.url);
+        if (id != null) {
+            for (MpvTrack t : MpvTrack.read("sub")) {
+                if (t.id == id) {
+                    selectSubtitle(t);
+                    hint("Subtitles: " + LangUtil.display(s.lang));
+                    autoSubDone = true;
+                    rebuildPanel();
+                    return;
+                }
+            }
+            onlineTrackId.remove(s.url);              // track vanished (file reloaded): load it again
+        }
+        addOnlineSubtitle(s);
+    }
+
     /** Download (charset-fixed) on a worker thread, then hand the local file to mpv. */
     private void addOnlineSubtitle(final SubtitleItem s) {
+        if (!loadingUrls.add(s.url)) return;
         hint("Loading " + LangUtil.display(s.lang) + " subtitles…");
-        addedUrls.add(s.url);
         new Thread(() -> {
             try {
                 final File f = SubtitleLoader.fetch(getApplicationContext(), s.url, s.lang);
                 main.post(() -> {
+                    loadingUrls.remove(s.url);
                     if (destroyed) return;
                     String l = LangUtil.canonical(s.lang);
                     try {
@@ -751,6 +801,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                                 LangUtil.display(s.lang), l.isEmpty() ? "und" : l});
                         MPVLib.setPropertyBoolean("sub-visibility", true);
                     } catch (Throwable ignored) {}
+                    int id = SEL_UNKNOWN;                 // sub-add selected it, so mpv's sid is the new track
+                    try { id = Integer.parseInt(MPVLib.getPropertyString("sid")); } catch (Throwable ignored) {}
+                    if (id <= 0) {                        // sid unreadable: take the newest unclaimed external track
+                        for (MpvTrack t : MpvTrack.read("sub"))
+                            if (t.external && !onlineTrackId.containsValue(t.id) && t.id > id) id = t.id;
+                    }
+                    if (id > 0) { onlineTrackId.put(s.url, id); ownSubSel = id; }
                     subtitleOverlay.clear();
                     subtitleOverlay.setSubtitlesOn(true);
                     autoSubDone = true;
@@ -760,7 +817,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 });
             } catch (Exception e) {
                 main.post(() -> {
-                    addedUrls.remove(s.url);
+                    loadingUrls.remove(s.url);
                     hint("Couldn't load that subtitle");
                 });
             }
@@ -790,7 +847,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         for (MpvTrack t : subs) if (LangUtil.matches(t.lang, pl) && !t.forced && !t.isImage()) { pick = t; break; }
         if (pick != null) { selectSubtitle(pick); autoSubDone = true; return; }
         SubtitleItem best = SubtitleRanker.bestFor(onlineRanked, pl);
-        if (best != null && !addedUrls.contains(best.url)) { addOnlineSubtitle(best); autoSubDone = true; return; }
+        if (best != null && !onlineTrackId.containsKey(best.url)) { addOnlineSubtitle(best); autoSubDone = true; return; }
         if (!subsLoading) autoSubDone = true;     // nothing matched and nothing more is coming
     }
 
