@@ -684,6 +684,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     /** Goes to logcat under the "mpv" tag so it shows up in the same capture as mpv's own output. */
     private static void diag(String m) { android.util.Log.i("mpv", "CahayaSub: " + m); }
+    private static void diagAudio(String m) { android.util.Log.i("mpv", "CahayaAudio: " + m); }
+    private static String getAidSafe() {
+        try { return MPVLib.getPropertyString("aid"); } catch (Throwable t) { return "?"; }
+    }
 
     private void buildSubtitlePanel() {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
@@ -1053,6 +1057,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
         panel.begin("Audio");
         List<MpvTrack> tracks = MpvTrack.read("audio");
+        diagAudio("panel open: " + tracks.size() + " tracks, current aid=" + getAidSafe());
+        for (MpvTrack t : tracks) {
+            diagAudio("  track id=" + t.id + " lang=" + t.lang + " codec=" + t.codec + " ch=" + t.channels);
+        }
         if (tracks.isEmpty()) {
             panel.note("No audio tracks reported yet.");
         }
@@ -1074,9 +1082,21 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             String detail = codec + (ch.isEmpty() ? "" : " · " + ch);
             if (t.isDefault) detail += " · Default";
             final String fLabel = label;
+            final String fCodec = t.codec;
+            final String fLang = t.lang;
+            final int fId = t.id;
             panel.row(label, detail, t.selected, () -> {
-                try { MPVLib.setPropertyString("aid", String.valueOf(t.id)); } catch (Throwable ignored) {}
-                selectedAudioId = t.id;
+                diagAudio("user select id=" + fId + " lang=" + fLang + " codec=" + fCodec);
+                try {
+                    MPVLib.setPropertyString("aid", String.valueOf(fId));
+                    // Verify what mpv actually selected
+                    String actualAid = MPVLib.getPropertyString("aid");
+                    String aCodec = MPVLib.getPropertyString("audio-codec-name");
+                    diagAudio("after select: aid=" + actualAid + " audio-codec=" + aCodec);
+                } catch (Throwable e) {
+                    diagAudio("select failed: " + e);
+                }
+                selectedAudioId = fId;
                 hint("Audio: " + fLabel);
                 schedulePanelRefresh();
             });
