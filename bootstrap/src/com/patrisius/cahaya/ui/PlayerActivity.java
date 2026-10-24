@@ -1053,16 +1053,31 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
         panel.begin("Audio");
         List<MpvTrack> tracks = MpvTrack.read("audio");
-        if (tracks.isEmpty()) panel.note("No audio tracks reported yet.");
+        if (tracks.isEmpty()) {
+            panel.note("No audio tracks reported yet.");
+        }
         // Use our tracked selection if set, else fall back to mpv's reported state
         if (selectedAudioId >= 0) {
             for (MpvTrack t : tracks) t.selected = (t.id == selectedAudioId);
         }
         for (final MpvTrack t : tracks) {
-            panel.row(t.label(), t.detail(), t.selected, () -> {
+            // TV-friendly label: Language · Codec Channels (e.g. "English · AAC Stereo")
+            String lang = (t.lang != null && !t.lang.isEmpty()) ? LangUtil.display(t.lang) : "Unknown";
+            String label = lang;
+            if (t.title != null && !t.title.isEmpty() && !t.title.equalsIgnoreCase(lang)
+                    && !t.title.equalsIgnoreCase(t.lang)) {
+                label += " · " + t.title;
+            }
+            String codec = (t.codec != null && !t.codec.isEmpty()) ? t.codec.toUpperCase() : "";
+            String ch = t.channels == 2 ? "Stereo" : t.channels == 6 ? "5.1 Surround"
+                    : t.channels == 8 ? "7.1 Surround" : t.channels > 0 ? t.channels + " channels" : "";
+            String detail = codec + (ch.isEmpty() ? "" : " · " + ch);
+            if (t.isDefault) detail += " · Default";
+            final String fLabel = label;
+            panel.row(label, detail, t.selected, () -> {
                 try { MPVLib.setPropertyString("aid", String.valueOf(t.id)); } catch (Throwable ignored) {}
                 selectedAudioId = t.id;
-                hint("Audio: " + t.label());
+                hint("Audio: " + fLabel);
                 schedulePanelRefresh();
             });
         }
