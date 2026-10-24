@@ -86,6 +86,15 @@ public class MainActivity extends Activity {
     private AddonWebServer webServer;
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        // Refresh Continue Watching when returning from player
+        if (homeRows != null) {
+            main.post(this::refreshContinueWatching);
+        }
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -360,7 +369,137 @@ public class MainActivity extends Activity {
         } else if (!allItems.isEmpty()) {
             homeStatus.setVisibility(View.GONE);
         }
+        // Add Continue Watching (refreshed in onResume too)
+        main.post(this::refreshContinueWatching);
         return scroll;
+    }
+
+    /** "Lanjutkan Menonton" row in the reference UI style, with progress bars. */
+    private View continueRow = null;
+    private void refreshContinueWatching() {
+        if (homeRows == null) return;
+        // Remove old row
+        if (continueRow != null) {
+            homeRows.removeView(continueRow);
+            continueRow = null;
+        }
+        List<ContinueWatching.Item> items = ContinueWatching.load(this);
+        if (items.isEmpty()) return;
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(0, dp(6), 0, dp(14));
+
+        TextView h = new TextView(this);
+        h.setText("Lanjutkan Menonton");
+        h.setTextSize(24);
+        h.setTextColor(Color.WHITE);
+        h.setPadding(0, 0, 0, dp(8));
+        col.addView(h);
+
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        for (ContinueWatching.Item it : items) {
+            strip.addView(makeContinueCard(it));
+        }
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        hsv.addView(strip);
+        col.addView(hsv);
+
+        continueRow = col;
+        // Insert after hero (position 1) or at top if no hero
+        int pos = heroAdded ? 1 : 0;
+        if (pos > homeRows.getChildCount()) pos = homeRows.getChildCount();
+        homeRows.addView(col, pos);
+    }
+
+    private View makeContinueCard(ContinueWatching.Item it) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        int w = dp(200);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                w, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, 0, dp(12), 0);
+        card.setLayoutParams(lp);
+        card.setFocusable(true);
+        card.setClickable(true);
+        card.setPadding(dp(4), dp(4), dp(4), dp(4));
+
+        // Thumbnail with progress overlay
+        FrameLayout thumb = new FrameLayout(this);
+        thumb.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(112)));
+        ImageView poster = new ImageView(this);
+        poster.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        poster.setBackgroundColor(Color.parseColor("#23262B"));
+        thumb.addView(poster);
+        if (it.poster != null) loadPoster(it.poster, poster);
+
+        // "Sisa X mnt" badge (top-right, like reference)
+        TextView badge = new TextView(this);
+        badge.setText(it.remainingText());
+        badge.setTextSize(11);
+        badge.setTextColor(Color.WHITE);
+        badge.setBackgroundColor(Color.parseColor("#AA000000"));
+        badge.setPadding(dp(6), dp(3), dp(6), dp(3));
+        FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        badgeLp.gravity = android.view.Gravity.TOP | android.view.Gravity.END;
+        badgeLp.setMargins(0, dp(6), dp(6), 0);
+        thumb.addView(badge, badgeLp);
+
+        // Progress bar (bottom)
+        View progressBg = new View(this);
+        progressBg.setBackgroundColor(Color.parseColor("#44FFFFFF"));
+        FrameLayout.LayoutParams pbBgLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(4));
+        pbBgLp.gravity = android.view.Gravity.BOTTOM;
+        thumb.addView(progressBg, pbBgLp);
+
+        View progress = new View(this);
+        progress.setBackgroundColor(Color.parseColor("#E8A33D"));
+        FrameLayout.LayoutParams pbLp = new FrameLayout.LayoutParams(
+                0, dp(4));
+        pbLp.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.START;
+        thumb.addView(progress, pbLp);
+        // Set width after layout
+        final double prog = it.progress();
+        thumb.post(() -> {
+            int fullW = thumb.getWidth();
+            ViewGroup.LayoutParams p = progress.getLayoutParams();
+            p.width = (int) (fullW * prog);
+            progress.setLayoutParams(p);
+        });
+
+        card.addView(thumb);
+
+        TextView name = new TextView(this);
+        name.setText(it.title);
+        name.setTextColor(Color.LTGRAY);
+        name.setMaxLines(2);
+        name.setPadding(0, dp(6), 0, 0);
+        card.addView(name);
+
+        card.setOnFocusChangeListener((v, hasFocus) -> {
+            v.setScaleX(hasFocus ? 1.05f : 1.0f);
+            v.setScaleY(hasFocus ? 1.05f : 1.0f);
+            name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
+        });
+        card.setOnClickListener(v -> {
+            // Resume: open details, user picks stream (or we could direct-play)
+            // For now, open details screen
+            Intent i = new Intent(MainActivity.this, DetailsActivity.class);
+            i.putExtra("id", it.videoId);
+            i.putExtra("type", it.type);
+            i.putExtra("resume_pos", it.position);
+            startActivity(i);
+        });
+
+        return card;
     }
 
     private boolean heroAdded = false;

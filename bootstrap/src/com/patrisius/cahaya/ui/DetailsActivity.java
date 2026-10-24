@@ -302,6 +302,10 @@ public class DetailsActivity extends Activity {
                     i.putExtra("title", title);
                     i.putExtra("type", itemType);
                     i.putExtra("video_id", videoId);
+                    i.putExtra("poster", details.poster);
+                    // Pass resume position if coming from Continue Watching
+                    double resume = getIntent().getDoubleExtra("resume_pos", 0);
+                    if (resume > 0) i.putExtra("start_pos", resume);
                     startActivity(i);
                 })
                 .setNegativeButton("Cancel", null)
@@ -364,6 +368,8 @@ public class DetailsActivity extends Activity {
         i.putExtra("title", title);
         i.putExtra("type", itemType);
         i.putExtra("video_id", videoId);
+        // details may be null here; poster is optional
+        try { i.putExtra("poster", details.poster); } catch (Throwable ignored) {}
         startActivity(i);
     }
 

@@ -206,6 +206,15 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     protected void onDestroy() {
         destroyed = true;
         if (subtitleOverlay != null) subtitleOverlay.stop();
+        // Save resume position for Continue Watching
+        try {
+            double pos = mpvTimePos > 0 ? mpvTimePos : manualPos;
+            double dur = mpvDuration > 0 ? mpvDuration : 0;
+            String poster = getIntent().getStringExtra("poster");
+            if (videoId != null && pos > 0) {
+                ContinueWatching.save(this, videoId, title, type, poster, pos, dur);
+            }
+        } catch (Throwable ignored) {}
         super.onDestroy();
         main.removeCallbacksAndMessages(null);
         try {
