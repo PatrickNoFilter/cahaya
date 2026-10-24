@@ -344,6 +344,24 @@ public class MainActivity extends Activity {
     // ---------------- Home ----------------
 
     private View makeHomeScreen() {
+        // Home root: pinned hero slot on top, scrollable rows below it.
+        LinearLayout homeRoot = new LinearLayout(this);
+        homeRoot.setOrientation(LinearLayout.VERTICAL);
+
+        heroSlot = new LinearLayout(this);
+        heroSlot.setOrientation(LinearLayout.VERTICAL);
+        homeRoot.addView(heroSlot, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        // Re-attach the persistent hero if Home is rebuilt (e.g. returning
+        // from another menu): it was detached with the old content pane.
+        if (heroView != null) {
+            if (heroView.getParent() instanceof ViewGroup) {
+                ((ViewGroup) heroView.getParent()).removeView(heroView);
+            }
+            heroSlot.addView(heroView);
+        }
+
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout col = new LinearLayout(this);
@@ -357,18 +375,12 @@ public class MainActivity extends Activity {
         homeRows = new LinearLayout(this);
         homeRows.setOrientation(LinearLayout.VERTICAL);
         col.addView(homeRows);
-        // Re-attach the persistent hero if Home is rebuilt (e.g. returning
-        // from another menu): it was detached with the old content pane.
-        if (heroView != null) {
-            if (heroView.getParent() instanceof ViewGroup) {
-                ((ViewGroup) heroView.getParent()).removeView(heroView);
-            }
-            homeRows.addView(heroView, 0);
-        }
 
         scroll.addView(col, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
+        homeRoot.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         if (!homeLoaded) {
             homeLoaded = true;
@@ -379,7 +391,7 @@ public class MainActivity extends Activity {
         }
         // Add Continue Watching (refreshed in onResume too)
         main.post(this::refreshContinueWatching);
-        return scroll;
+        return homeRoot;
     }
 
     /** "Lanjutkan Menonton" row in the reference UI style, with progress bars. */
@@ -416,10 +428,9 @@ public class MainActivity extends Activity {
         col.addView(hsv);
 
         continueRow = col;
-        // Insert after hero (position 1) or at top if no hero
-        int pos = heroView != null ? 1 : 0;
-        if (pos > homeRows.getChildCount()) pos = homeRows.getChildCount();
-        homeRows.addView(col, pos);
+        // Hero is pinned above the scroll area now, so Continue Watching
+        // is simply the first scrollable row.
+        homeRows.addView(col, 0);
     }
 
     private View makeContinueCard(ContinueWatching.Item it) {
@@ -521,6 +532,10 @@ public class MainActivity extends Activity {
     // episode count) from /meta. Meta results are cached per id so moving
     // back to a title is instant; a sequence guard drops stale replies.
     private View heroView = null;
+    // v0.10.4: fixed slot ABOVE the Home ScrollView. The hero lives here,
+    // not inside homeRows, so it stays pinned at the top while the rows
+    // scroll underneath it.
+    private LinearLayout heroSlot = null;
     private ImageView heroBg = null;
     private TextView heroTitle = null;
     private TextView heroMeta = null;
@@ -541,11 +556,19 @@ public class MainActivity extends Activity {
                             homeStatus.setVisibility(View.GONE);
                         }
                         if (homeRows != null) {
-                            // Create the adaptive hero once, at the top;
-                            // its content then follows card focus.
+                            // Create the adaptive hero once, in its pinned
+                            // slot above the scroll area; its content then
+                            // follows card focus while rows scroll below.
                             if (heroView == null) {
                                 heroView = makeHero();
-                                homeRows.addView(heroView, 0);
+                                if (heroSlot != null
+                                        && heroView.getParent() != heroSlot) {
+                                    if (heroView.getParent() instanceof ViewGroup) {
+                                        ((ViewGroup) heroView.getParent())
+                                                .removeView(heroView);
+                                    }
+                                    heroSlot.addView(heroView);
+                                }
                             }
                             if (heroItem == null && !items.isEmpty()) {
                                 updateHero(items.get(0));
@@ -1373,7 +1396,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.10.3 (build 28)");
+        addSettingRow(col, "Version", "0.10.4 (build 29)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
