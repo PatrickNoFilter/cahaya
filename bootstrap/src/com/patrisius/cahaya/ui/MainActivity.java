@@ -357,6 +357,14 @@ public class MainActivity extends Activity {
         homeRows = new LinearLayout(this);
         homeRows.setOrientation(LinearLayout.VERTICAL);
         col.addView(homeRows);
+        // Re-attach the persistent hero if Home is rebuilt (e.g. returning
+        // from another menu): it was detached with the old content pane.
+        if (heroView != null) {
+            if (heroView.getParent() instanceof ViewGroup) {
+                ((ViewGroup) heroView.getParent()).removeView(heroView);
+            }
+            homeRows.addView(heroView, 0);
+        }
 
         scroll.addView(col, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -409,7 +417,7 @@ public class MainActivity extends Activity {
 
         continueRow = col;
         // Insert after hero (position 1) or at top if no hero
-        int pos = heroAdded ? 1 : 0;
+        int pos = heroView != null ? 1 : 0;
         if (pos > homeRows.getChildCount()) pos = homeRows.getChildCount();
         homeRows.addView(col, pos);
     }
@@ -488,6 +496,10 @@ public class MainActivity extends Activity {
             v.setScaleX(hasFocus ? 1.05f : 1.0f);
             v.setScaleY(hasFocus ? 1.05f : 1.0f);
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
+            if (hasFocus) {
+                updateInfo(it.title);
+                updateHero(new CatalogItem(it.videoId, it.type, it.title, it.poster));
+            }
         });
         card.setOnClickListener(v -> {
             // Resume: open details, user picks stream (or we could direct-play)
@@ -502,7 +514,22 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    private boolean heroAdded = false;
+    // Adaptive hero banner (v0.10.2): one persistent banner at the top of
+    // Home. Every card focus calls updateHero(item), which swaps the banner
+    // to that title immediately (catalog name/poster/type) and then fills
+    // in the full info (description, year, genres, rating, backdrop,
+    // episode count) from /meta. Meta results are cached per id so moving
+    // back to a title is instant; a sequence guard drops stale replies.
+    private View heroView = null;
+    private ImageView heroBg = null;
+    private TextView heroTitle = null;
+    private TextView heroMeta = null;
+    private TextView heroDesc = null;
+    private TextView heroBadge = null;
+    private CatalogItem heroItem = null;
+    private int heroMetaSeq = 0;
+    private final java.util.Map<String, com.patrisius.cahaya.addon.MetaDetails> heroMetaCache =
+            new java.util.HashMap<>();
 
     private void loadRow(String type, String id, String header) {
         mgr.catalog(AddonManager.DEFAULT_ADDON, type, id,
@@ -514,10 +541,14 @@ public class MainActivity extends Activity {
                             homeStatus.setVisibility(View.GONE);
                         }
                         if (homeRows != null) {
-                            // Add hero banner with first movie (reference UI style)
-                            if (!heroAdded && type.equals("movie") && !items.isEmpty()) {
-                                heroAdded = true;
-                                homeRows.addView(makeHero(items.get(0)), 0);
+                            // Create the adaptive hero once, at the top;
+                            // its content then follows card focus.
+                            if (heroView == null) {
+                                heroView = makeHero();
+                                homeRows.addView(heroView, 0);
+                            }
+                            if (heroItem == null && !items.isEmpty()) {
+                                updateHero(items.get(0));
                             }
                             homeRows.addView(makeRow(header, items));
                         }
@@ -532,28 +563,30 @@ public class MainActivity extends Activity {
                 });
     }
 
-    /** Hero banner in the style of the reference UI: large backdrop, title, meta. */
-    private View makeHero(CatalogItem item) {
+    /** Adaptive hero banner (v0.10.2): created once, content follows focus.
+     *  Backdrop, title, meta line and description are stored in fields so
+     *  updateHero() can swap them without rebuilding the view. */
+    private View makeHero() {
         FrameLayout hero = new FrameLayout(this);
         int heroH = dp(320);
         hero.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, heroH));
         hero.setPadding(0, 0, 0, dp(16));
 
-        // Backdrop (poster scaled to fill, with dark gradient overlay)
-        ImageView bg = new ImageView(this);
-        bg.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        bg.setLayoutParams(new FrameLayout.LayoutParams(
+        // Backdrop (poster/backdrop scaled to fill, with dark overlay)
+        heroBg = new ImageView(this);
+        heroBg.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        heroBg.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        hero.addView(bg);
-        loadPoster(item.poster, bg);
+        heroBg.setBackgroundColor(Color.parseColor("#23262B"));
+        hero.addView(heroBg);
 
-        // Dark gradient overlay (bottom half)
+        // Dark overlay (bottom half) so text stays readable
         View shade = new View(this);
         shade.setBackgroundColor(Color.parseColor("#AA000000"));
         FrameLayout.LayoutParams shadeLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(160));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(200));
         shadeLp.gravity = android.view.Gravity.BOTTOM;
         hero.addView(shade, shadeLp);
 
@@ -567,36 +600,109 @@ public class MainActivity extends Activity {
         textLp.gravity = android.view.Gravity.BOTTOM;
         hero.addView(text, textLp);
 
-        TextView badge = new TextView(this);
-        badge.setText("★ FEATURED");
-        badge.setTextSize(12);
-        badge.setTextColor(Color.parseColor("#E8A33D"));
-        text.addView(badge);
+        heroBadge = new TextView(this);
+        heroBadge.setText("★ FEATURED");
+        heroBadge.setTextSize(12);
+        heroBadge.setTextColor(Color.parseColor("#E8A33D"));
+        text.addView(heroBadge);
 
-        TextView title = new TextView(this);
-        title.setText(item.name);
-        title.setTextSize(32);
-        title.setTextColor(Color.WHITE);
-        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
-        text.addView(title);
+        heroTitle = new TextView(this);
+        heroTitle.setText("Cahaya");
+        heroTitle.setTextSize(32);
+        heroTitle.setTextColor(Color.WHITE);
+        heroTitle.setTypeface(heroTitle.getTypeface(), android.graphics.Typeface.BOLD);
+        text.addView(heroTitle);
 
-        TextView meta = new TextView(this);
-        meta.setText(item.type.equals("series") ? "Series" : "Movie");
-        meta.setTextSize(14);
-        meta.setTextColor(Color.parseColor("#B0B0B0"));
-        text.addView(meta);
+        heroMeta = new TextView(this);
+        heroMeta.setText("");
+        heroMeta.setTextSize(14);
+        heroMeta.setTextColor(Color.parseColor("#B0B0B0"));
+        text.addView(heroMeta);
 
-        // Click opens details
+        heroDesc = new TextView(this);
+        heroDesc.setText("");
+        heroDesc.setTextSize(14);
+        heroDesc.setTextColor(Color.parseColor("#D0D0D0"));
+        heroDesc.setMaxLines(3);
+        heroDesc.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        text.addView(heroDesc);
+
+        // Click opens details for whichever title the banner shows now
         hero.setFocusable(true);
         hero.setClickable(true);
         hero.setOnClickListener(v -> {
+            if (heroItem == null) return;
             Intent i = new Intent(MainActivity.this, DetailsActivity.class);
-            i.putExtra("id", item.id);
-            i.putExtra("type", item.type);
+            i.putExtra("id", heroItem.id);
+            i.putExtra("type", heroItem.type);
             startActivity(i);
         });
 
         return hero;
+    }
+
+    /**
+     * Point the banner at the focused title. Catalog data (name, type,
+     * poster) shows instantly; /meta then fills description, year,
+     * genres, rating, backdrop and episode count. Cached meta applies
+     * instantly. Stale /meta replies (focus moved on) are dropped.
+     */
+    private void updateHero(CatalogItem item) {
+        if (item == null || heroView == null) return;
+        if (heroItem != null && heroItem.id.equals(item.id)) return;
+        heroItem = item;
+        final int seq = ++heroMetaSeq;
+
+        heroBadge.setText("series".equals(item.type) ? "★ SERIES" : "★ MOVIE");
+        heroTitle.setText(item.name);
+        heroMeta.setText("series".equals(item.type) ? "Series" : "Movie");
+        heroDesc.setText("");
+        loadPoster(item.poster, heroBg);
+
+        com.patrisius.cahaya.addon.MetaDetails cached = heroMetaCache.get(item.id);
+        if (cached != null) {
+            applyHeroMeta(cached);
+            return;
+        }
+        heroDesc.setText("Loading info…");
+        mgr.meta(AddonManager.DEFAULT_ADDON, item.type, item.id,
+                new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
+                    @Override
+                    public void onResult(com.patrisius.cahaya.addon.MetaDetails d) {
+                        if (seq != heroMetaSeq || heroItem == null
+                                || !heroItem.id.equals(d.id)) return;
+                        heroMetaCache.put(d.id, d);
+                        applyHeroMeta(d);
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        // Keep the catalog fallback (title/poster/type);
+                        // a failed meta fetch must not blank the banner.
+                        if (seq != heroMetaSeq) return;
+                        heroDesc.setText("");
+                    }
+                });
+    }
+
+    /** Fill the banner from a /meta result (backdrop preferred over poster). */
+    private void applyHeroMeta(com.patrisius.cahaya.addon.MetaDetails d) {
+        if (heroItem == null || !heroItem.id.equals(d.id)) return;
+        if (d.background != null && !d.background.isEmpty()) {
+            loadPoster(d.background, heroBg);
+        } else if (d.poster != null) {
+            loadPoster(d.poster, heroBg);
+        }
+        if (d.name != null && !d.name.isEmpty()) heroTitle.setText(d.name);
+        StringBuilder meta = new StringBuilder();
+        if (d.releaseInfo != null && !d.releaseInfo.isEmpty()) meta.append(d.releaseInfo);
+        meta.append(meta.length() > 0 ? "  ·  " : "")
+                .append("series".equals(d.type) ? "Series" : "Movie");
+        if (d.isSeries()) meta.append("  ·  ").append(d.videos.size()).append(" episodes");
+        if (d.genres != null && !d.genres.isEmpty()) meta.append("  ·  ").append(d.genres);
+        if (d.rating != null && !d.rating.isEmpty()) meta.append("  ·  ★ ").append(d.rating);
+        heroMeta.setText(meta.toString());
+        heroDesc.setText(d.description != null ? d.description : "");
     }
 
     private View makeRow(String header, List<CatalogItem> items) {
@@ -802,6 +908,7 @@ public class MainActivity extends Activity {
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
             if (hasFocus) {
                 updateInfo(item.name);
+                updateHero(item);
             }
         });
         card.setOnClickListener(v -> {
@@ -1263,7 +1370,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.7.0 (build 8)");
+        addSettingRow(col, "Version", "0.10.2 (build 27)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");

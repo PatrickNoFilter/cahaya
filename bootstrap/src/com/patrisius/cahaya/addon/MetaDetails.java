@@ -12,6 +12,8 @@ public class MetaDetails {
     public String background;
     public String description;
     public String releaseInfo;
+    public String genres;   // comma-joined, e.g. "Drama, Action"
+    public String rating;   // IMDb rating string, e.g. "8.2"
     public final List<VideoInfo> videos = new ArrayList<>();
 
     public static class VideoInfo {

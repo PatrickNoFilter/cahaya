@@ -171,6 +171,16 @@ public class AddonManager {
                             d.description = m.optString("description", "");
                             d.releaseInfo = m.optString("releaseInfo",
                                     m.optString("year", ""));
+                            JSONArray genres = m.optJSONArray("genres");
+                            if (genres != null) {
+                                StringBuilder g = new StringBuilder();
+                                for (int gi = 0; gi < genres.length(); gi++) {
+                                    if (g.length() > 0) g.append(", ");
+                                    g.append(genres.optString(gi, ""));
+                                }
+                                d.genres = g.toString();
+                            }
+                            d.rating = m.optString("imdbRating", "");
                             JSONArray vids = m.optJSONArray("videos");
                             if (vids != null) {
                                 for (int i = 0; i < vids.length(); i++) {
