@@ -28,17 +28,26 @@ import java.util.concurrent.Executors;
  *   2. TV shows the code; user enters it at google.com/device on a phone
  *   3. TV polls /token until approval, then fetches /userinfo
  *
- * The client ID below is NOT a secret (device-flow clients are public;
- * there is no client secret). It must be a "TVs and Limited Input
- * devices" OAuth client created in Google Cloud Console. Until a real
- * client ID is baked in here, isConfigured() is false and the UI shows
- * setup instructions instead of attempting a sign-in that Google would
- * reject. To enable: create the client, paste its ID here, rebuild.
+ * v0.10.10 correction: Google's device-flow token endpoint DOES
+ * require client_secret in the /token poll (and refresh) requests —
+ * see developers.google.com/identity/protocols/oauth2/limited-input-device,
+ * Step 4. v0.10.9 omitted it, so Google answered every poll with
+ * HTTP 400 "Missing required parameter: client_secret", and the old
+ * poll loop swallowed all non-200 responses as "keep waiting" — hence
+ * a phone that said "Berhasil!" while the TV dialog never moved.
+ * For installed TV apps Google treats this secret as distributed with
+ * the app, not a server secret, and the scopes here are only
+ * email/profile. Even so, the real value is NEVER committed to the
+ * public repo: it is injected at build time from the Notion vault
+ * ("Cahaya Google OAuth") and the committed source keeps the
+ * placeholder below. A build from git alone will show the missing-
+ * secret error in the dialog instead of hanging.
  */
 public class GoogleAccount {
 
-    /** Replace with the real TV client ID, e.g. 123456789012-abc....apps.googleusercontent.com */
     public static final String CLIENT_ID = "1075062656076-6ddc1c67off2sqsjg7peejqlfkv9pmi6.apps.googleusercontent.com";
+    /** Injected at build time from Notion; placeholder in git. */
+    public static final String CLIENT_SECRET = "YOUR_TV_CLIENT_SECRET";
     public static final String SCOPE = "email profile";
 
     private static final String DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code";
@@ -148,11 +157,15 @@ public class GoogleAccount {
                         return;
                     }
                     String body = "client_id=" + URLEncoder.encode(CLIENT_ID, "UTF-8")
+                            + "&client_secret=" + URLEncoder.encode(CLIENT_SECRET, "UTF-8")
                             + "&device_code=" + URLEncoder.encode(d.deviceCode, "UTF-8")
                             + "&grant_type=urn:ietf:params:oauth:grant-type:device_code";
                     JSONObject j;
                     try {
-                        j = new JSONObject(postForm(TOKEN_URL, body));
+                        // Poll responses are HTTP 400 for pending/denied/
+                        // expired, so parse the body instead of throwing
+                        // it away: a swallowed 400 was the v0.10.9 hang.
+                        j = new JSONObject(postFormRaw(TOKEN_URL, body));
                     } catch (Exception e) {
                         // Network blip while polling: keep waiting until deadline.
                         continue;
@@ -184,7 +197,9 @@ public class GoogleAccount {
                     } else if ("expired_token".equals(err)) {
                         throw new Exception("Code expired — please try again");
                     } else {
-                        throw new Exception("Google sign-in failed: " + err);
+                        String desc = j.optString("error_description", "");
+                        throw new Exception("Google sign-in failed: " + err
+                                + (desc.isEmpty() ? "" : " — " + desc));
                     }
                 }
                 if (!task.cancelled) {
@@ -210,9 +225,10 @@ public class GoogleAccount {
                     return;
                 }
                 String body = "client_id=" + URLEncoder.encode(CLIENT_ID, "UTF-8")
+                        + "&client_secret=" + URLEncoder.encode(CLIENT_SECRET, "UTF-8")
                         + "&refresh_token=" + URLEncoder.encode(refresh, "UTF-8")
                         + "&grant_type=refresh_token";
-                JSONObject j = new JSONObject(postForm(TOKEN_URL, body));
+                JSONObject j = new JSONObject(postFormRaw(TOKEN_URL, body));
                 if (!j.has("access_token")) {
                     // Refresh token revoked/expired: sign the user out locally.
                     prefs(ctx).edit().clear().apply();
@@ -278,7 +294,9 @@ public class GoogleAccount {
         return p;
     }
 
-    private static String postForm(String urlStr, String body) throws Exception {
+    /** POST and return the body whatever the HTTP status (callers parse
+     *  error JSON themselves). Throws only on a real network failure. */
+    private static String postFormRaw(String urlStr, String body) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
         c.setConnectTimeout(15000);
         c.setReadTimeout(30000);
@@ -291,18 +309,36 @@ public class GoogleAccount {
         out.flush();
         out.close();
         int code = c.getResponseCode();
-        BufferedReader r = new BufferedReader(new InputStreamReader(
-                code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream(), "UTF-8"));
+        java.io.InputStream in = code >= 200 && code < 300
+                ? c.getInputStream() : c.getErrorStream();
+        if (in == null) {
+            return "";
+        }
+        BufferedReader r = new BufferedReader(new InputStreamReader(in, "UTF-8"));
         StringBuilder sb = new StringBuilder();
         String line;
         while ((line = r.readLine()) != null) {
             sb.append(line);
         }
         r.close();
-        if (code < 200 || code >= 300) {
-            throw new Exception("Google error (HTTP " + code + "): " + sb.toString());
-        }
         return sb.toString();
+    }
+
+    private static String postForm(String urlStr, String body) throws Exception {
+        String resp = postFormRaw(urlStr, body);
+        // postForm callers (device-code, revoke) treat any error body
+        // as a failure; the poll loop uses postFormRaw directly.
+        // Re-check status via a second look is not available here, so
+        // treat a body containing an "error" field as a failure.
+        JSONObject j = null;
+        try {
+            j = new JSONObject(resp);
+        } catch (Exception ignored) {
+        }
+        if (j != null && j.has("error")) {
+            throw new Exception("Google error: " + resp);
+        }
+        return resp;
     }
 
     private static <T> void post(Callback<T> cb, T result, Exception e) {
