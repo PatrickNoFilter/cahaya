@@ -568,7 +568,10 @@ public class MainActivity extends Activity {
      *  updateHero() can swap them without rebuilding the view. */
     private View makeHero() {
         FrameLayout hero = new FrameLayout(this);
-        int heroH = dp(320);
+        // v0.10.3: was 320dp — at the box's density that ate ~60% of a
+        // 1080p screen and pushed the first row's posters off-screen.
+        // 200dp leaves room for the top bar + row header + full posters.
+        int heroH = dp(200);
         hero.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, heroH));
         hero.setPadding(0, 0, 0, dp(16));
@@ -586,7 +589,7 @@ public class MainActivity extends Activity {
         View shade = new View(this);
         shade.setBackgroundColor(Color.parseColor("#AA000000"));
         FrameLayout.LayoutParams shadeLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(200));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(150));
         shadeLp.gravity = android.view.Gravity.BOTTOM;
         hero.addView(shade, shadeLp);
 
@@ -608,7 +611,7 @@ public class MainActivity extends Activity {
 
         heroTitle = new TextView(this);
         heroTitle.setText("Cahaya");
-        heroTitle.setTextSize(32);
+        heroTitle.setTextSize(28);
         heroTitle.setTextColor(Color.WHITE);
         heroTitle.setTypeface(heroTitle.getTypeface(), android.graphics.Typeface.BOLD);
         text.addView(heroTitle);
@@ -623,7 +626,7 @@ public class MainActivity extends Activity {
         heroDesc.setText("");
         heroDesc.setTextSize(14);
         heroDesc.setTextColor(Color.parseColor("#D0D0D0"));
-        heroDesc.setMaxLines(3);
+        heroDesc.setMaxLines(2);
         heroDesc.setEllipsize(android.text.TextUtils.TruncateAt.END);
         text.addView(heroDesc);
 
@@ -1370,7 +1373,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.10.2 (build 27)");
+        addSettingRow(col, "Version", "0.10.3 (build 28)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
