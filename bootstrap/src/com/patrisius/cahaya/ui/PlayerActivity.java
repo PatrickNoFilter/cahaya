@@ -128,6 +128,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private String wantLang;
     private volatile boolean loggedMpvText;
     private boolean subsLoading, onlineExpanded, autoSubDone;
+    private int selectedAudioId = -2; // -2 = unknown (read from mpv), else track id
     private int subDelayMs, aspectMode, speedIdx = 2;
 
     private final Runnable hideController = this::hideControllerNow;
@@ -1053,9 +1054,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panel.begin("Audio");
         List<MpvTrack> tracks = MpvTrack.read("audio");
         if (tracks.isEmpty()) panel.note("No audio tracks reported yet.");
+        // Use our tracked selection if set, else fall back to mpv's reported state
+        if (selectedAudioId >= 0) {
+            for (MpvTrack t : tracks) t.selected = (t.id == selectedAudioId);
+        }
         for (final MpvTrack t : tracks) {
             panel.row(t.label(), t.detail(), t.selected, () -> {
                 try { MPVLib.setPropertyString("aid", String.valueOf(t.id)); } catch (Throwable ignored) {}
+                selectedAudioId = t.id;
                 hint("Audio: " + t.label());
                 schedulePanelRefresh();
             });
