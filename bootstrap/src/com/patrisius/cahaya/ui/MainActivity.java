@@ -33,8 +33,10 @@ import com.patrisius.cahaya.addon.AddonManager;
 import com.patrisius.cahaya.qr.QrCode;
 import com.patrisius.cahaya.web.AddonWebServer;
 import com.patrisius.cahaya.addon.CatalogItem;
+import com.patrisius.cahaya.addon.StreamItem;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
+import com.patrisius.cahaya.torrent.TorrentStreamer;
 
 import org.json.JSONObject;
 
@@ -45,6 +47,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * v0.2 bootstrap: Nuvio-style left sidebar navigation (Home, Search,
@@ -83,6 +86,12 @@ public class MainActivity extends Activity {
 
     private LinearLayout homeRows;
     private TextView homeStatus;
+    // v0.10.12: Home screen cache. makeHomeScreen() used to build a NEW
+    // empty homeRows on every Home click, while catalog rows only load
+    // once (homeLoaded guard) — so clicking Home after the first load
+    // discarded all rows and showed just the hero. Reusing the built
+    // screen keeps the rows, the scroll position and the hero intact.
+    private View cachedHomeRoot = null;
     private final List<CatalogItem> allItems = new ArrayList<>();
     private boolean homeLoaded = false;
 
@@ -245,6 +254,7 @@ public class MainActivity extends Activity {
             @Override
             public void onError(Exception e) {
                 selectMenu(0, false);
+                menuRows.get(0).requestFocus();
                 if (homeStatus != null) {
                     homeStatus.setText("Offline — couldn't reach addon: " + e.getMessage());
                 }
@@ -335,11 +345,27 @@ public class MainActivity extends Activity {
             case 3: screen = makeAddonsScreen(); break;
             case 4: screen = makePluginsScreen(); break;
             case 5: screen = makeSettingsScreen(); break;
-            default: screen = makeHomeScreen(); break;
+            default:
+                // v0.10.12: reuse the built Home screen (see cachedHomeRoot
+                // note). Rebuilding it blanked all catalog rows on every
+                // Home click, because rows only load once (homeLoaded).
+                if (cachedHomeRoot != null) {
+                    screen = cachedHomeRoot;
+                } else {
+                    screen = makeHomeScreen();
+                    cachedHomeRoot = screen;
+                }
+                break;
         }
         content.addView(screen, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+        if (idx == 0) {
+            // Refresh Playing History on every return to Home (new plays
+            // since the last visit appear at the top). Idempotent: it
+            // removes and re-adds its own row only.
+            main.post(this::refreshContinueWatching);
+        }
         if (moveFocus) {
             View f = screen.findFocus();
             if (f == null) {
@@ -432,12 +458,16 @@ public class MainActivity extends Activity {
         } else if (!allItems.isEmpty()) {
             homeStatus.setVisibility(View.GONE);
         }
-        // Add Continue Watching (refreshed in onResume too)
-        main.post(this::refreshContinueWatching);
+        // Playing History is refreshed by selectMenu() on every return
+        // to Home (and by onResume), not here, to avoid a double refresh
+        // on the first build.
         return homeRoot;
     }
 
-    /** "Lanjutkan Menonton" row in the reference UI style, with progress bars. */
+    /** "Playing History" row (v0.10.12, was "Lanjutkan Menonton"): the
+     *  very first row on Home, above all catalog rows. Cards click to
+     *  auto-resume playback at the saved position (see
+     *  resumeHistoryItem), not to a Details screen. */
     private View continueRow = null;
     private void refreshContinueWatching() {
         if (homeRows == null) return;
@@ -454,7 +484,7 @@ public class MainActivity extends Activity {
         col.setPadding(0, dp(6), 0, dp(14));
 
         TextView h = new TextView(this);
-        h.setText("Lanjutkan Menonton");
+        h.setText("Playing History");
         h.setTextSize(24);
         h.setTextColor(Color.WHITE);
         h.setPadding(0, 0, 0, dp(8));
@@ -555,17 +585,156 @@ public class MainActivity extends Activity {
                 updateHero(new CatalogItem(it.videoId, it.type, it.title, it.poster));
             }
         });
-        card.setOnClickListener(v -> {
-            // Resume: open details, user picks stream (or we could direct-play)
-            // For now, open details screen
-            Intent i = new Intent(MainActivity.this, DetailsActivity.class);
-            i.putExtra("id", it.videoId);
-            i.putExtra("type", it.type);
-            i.putExtra("resume_pos", it.position);
-            startActivity(i);
-        });
+        card.setOnClickListener(v -> resumeHistoryItem(it));
 
         return card;
+    }
+
+    /** Playing History click (v0.10.12): auto-resume playback.
+     *  Collects streams from every addon/plugin exactly like Details,
+     *  sorts most-seeders-first, auto-picks the top stream (no picker),
+     *  and launches the player with start_pos = saved position.
+     *  Torrent streams go through TorrentStreamer first, like Details,
+     *  but unlike Details' torrent path this one DOES pass start_pos,
+     *  so torrents resume too. */
+    private void resumeHistoryItem(ContinueWatching.Item it) {
+        final AlertDialog progress = new AlertDialog.Builder(this)
+                .setMessage("Finding streams…")
+                .setCancelable(false)
+                .create();
+        progress.show();
+
+        final List<StreamItem> all = new ArrayList<>();
+        final List<String> addonUrls = new ArrayList<>(mgr.addonUrls());
+        final List<Plugin> enabledPlugins = new ArrayList<>();
+        for (Plugin p : plugins.plugins()) {
+            if (p.enabled) {
+                enabledPlugins.add(p);
+            }
+        }
+        final AtomicInteger pending =
+                new AtomicInteger(addonUrls.size() + enabledPlugins.size());
+        if (pending.get() == 0) {
+            progress.dismiss();
+            Toast.makeText(this, "No addons or plugins installed",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final Runnable done = () -> {
+            if (pending.decrementAndGet() > 0) {
+                return;
+            }
+            progress.dismiss();
+            if (all.isEmpty()) {
+                Toast.makeText(MainActivity.this,
+                        "No streams found — install a streams addon or plugin",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            java.util.Collections.sort(all, (a, b) ->
+                    Integer.compare(b.seeders, a.seeders));
+            StreamItem s = all.get(0);
+            if (s.isTorrent()) {
+                playHistoryTorrent(it, s);
+                return;
+            }
+            Intent i = new Intent(MainActivity.this, PlayerActivity.class);
+            i.putExtra("url", s.url);
+            i.putExtra("title", it.title);
+            i.putExtra("type", it.type);
+            i.putExtra("video_id", it.videoId);
+            if (it.poster != null) i.putExtra("poster", it.poster);
+            if (it.position > 0) i.putExtra("start_pos", it.position);
+            startActivity(i);
+        };
+
+        AddonManager.Callback<List<StreamItem>> collect =
+                new AddonManager.Callback<List<StreamItem>>() {
+                    @Override
+                    public void onResult(List<StreamItem> items) {
+                        synchronized (all) {
+                            all.addAll(items);
+                        }
+                        main.post(done);
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        main.post(done);
+                    }
+                };
+        for (String base : addonUrls) {
+            mgr.streams(base, it.type, it.videoId, collect);
+        }
+        for (Plugin p : enabledPlugins) {
+            plugins.pluginStreams(p.baseUrl, it.type, it.videoId,
+                    new PluginManager.Callback<List<StreamItem>>() {
+                        @Override
+                        public void onResult(List<StreamItem> items) {
+                            collect.onResult(items);
+                        }
+
+                        @Override
+                        public void onError(Exception e) {
+                            collect.onError(e);
+                        }
+                    });
+        }
+    }
+
+    private void playHistoryTorrent(ContinueWatching.Item it, StreamItem s) {
+        TextView msg = new TextView(this);
+        msg.setPadding(48, 32, 48, 32);
+        msg.setTextSize(18);
+        msg.setText("Starting…");
+        AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("Torrent")
+                .setView(msg)
+                .setNegativeButton("Cancel", (d, w) -> TorrentStreamer.stopActive())
+                .setCancelable(false)
+                .create();
+        dlg.show();
+
+        new TorrentStreamer().start(this, s.url, s.fileIdx,
+                new TorrentStreamer.Callback() {
+                    @Override
+                    public void onProgress(String stage, int percent, String detail) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) {
+                                msg.setText(stage + "\n" + percent + "%"
+                                        + (detail.isEmpty() ? "" : "\n" + detail));
+                            }
+                        });
+                    }
+
+                    @Override
+                    public void onReady(String httpUrl, String fileName) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) dlg.dismiss();
+                            Intent i = new Intent(MainActivity.this,
+                                    PlayerActivity.class);
+                            i.putExtra("url", httpUrl);
+                            i.putExtra("title", it.title);
+                            i.putExtra("type", it.type);
+                            i.putExtra("video_id", it.videoId);
+                            if (it.poster != null) i.putExtra("poster", it.poster);
+                            if (it.position > 0) {
+                                i.putExtra("start_pos", it.position);
+                            }
+                            startActivity(i);
+                        });
+                    }
+
+                    @Override
+                    public void onError(String errMsg) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) dlg.dismiss();
+                            Toast.makeText(MainActivity.this, errMsg,
+                                    Toast.LENGTH_LONG).show();
+                        });
+                    }
+                });
     }
 
     // Adaptive hero banner (v0.10.2): one persistent banner at the top of
@@ -1621,7 +1790,7 @@ public class MainActivity extends Activity {
         col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        addSettingRow(col, "Version", "0.10.11 (build 36)");
+        addSettingRow(col, "Version", "0.10.12 (build 37)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
