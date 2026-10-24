@@ -38,7 +38,7 @@ import java.util.concurrent.Executors;
 public class GoogleAccount {
 
     /** Replace with the real TV client ID, e.g. 123456789012-abc....apps.googleusercontent.com */
-    public static final String CLIENT_ID = "YOUR_TV_CLIENT_ID.apps.googleusercontent.com";
+    public static final String CLIENT_ID = "1075062656076-6ddc1c67off2sqsjg7peejqlfkv9pmi6.apps.googleusercontent.com";
     public static final String SCOPE = "email profile";
 
     private static final String DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code";
