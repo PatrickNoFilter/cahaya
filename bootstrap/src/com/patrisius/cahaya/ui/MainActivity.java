@@ -90,9 +90,22 @@ public class MainActivity extends Activity {
     private PluginManager plugins;
     private AddonWebServer webServer;
 
+    private TextView accountLabel;
+
+    private void refreshAccountLabel() {
+        if (accountLabel == null) return;
+        if (GoogleAccount.isSignedIn(this)) {
+            String name = GoogleAccount.displayName(this);
+            accountLabel.setText("👤 " + (name != null ? name : "Signed in"));
+        } else {
+            accountLabel.setText("👤 Not signed in");
+        }
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        refreshAccountLabel();
         // Refresh Continue Watching when returning from player
         if (homeRows != null) {
             main.post(this::refreshContinueWatching);
@@ -131,6 +144,19 @@ public class MainActivity extends Activity {
         brandLogo.setScaleType(ImageView.ScaleType.FIT_START);
         brandLogo.setPadding(dp(16), dp(20), dp(16), dp(12));
         sidebar.addView(brandLogo, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Google account, shown under the logo (v0.10.8 device-code sign-in).
+        // Sign in/out itself lives in Settings; this is just the status.
+        accountLabel = new TextView(this);
+        accountLabel.setText("👤 Not signed in");
+        accountLabel.setTextSize(13);
+        accountLabel.setTextColor(Color.parseColor("#9AA0A6"));
+        accountLabel.setPadding(dp(16), 0, dp(16), dp(12));
+        accountLabel.setSingleLine(true);
+        accountLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        sidebar.addView(accountLabel, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -270,6 +296,9 @@ public class MainActivity extends Activity {
         });
         anim.start();
         brandLogo.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        if (accountLabel != null) {
+            accountLabel.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        }
         for (TextView label : menuLabels) {
             label.setVisibility(expanded ? View.VISIBLE : View.GONE);
         }
@@ -885,6 +914,127 @@ public class MainActivity extends Activity {
         return Bitmap.createScaledBitmap(small, px, px, false);
     }
 
+    /** Google device-code sign-in dialog (v0.10.8).
+     *  Shows the code + QR, polls Google until the user approves on
+     *  their phone, then stores the profile. If no TV OAuth client ID
+     *  is baked in yet, shows the setup steps instead of failing. */
+    private GoogleAccount.PollTask currentGooglePoll = null;
+
+    private void showGoogleSignInDialog() {
+        if (!GoogleAccount.isConfigured()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Google sign-in not set up yet")
+                    .setMessage("Cahaya needs a Google OAuth client of type "
+                            + "\"TVs and Limited Input devices\" before anyone can sign in.\n\n"
+                            + "1. Open console.cloud.google.com and create/select a project (e.g. Cahaya).\n"
+                            + "2. APIs & Services > OAuth consent screen: set it up (External).\n"
+                            + "3. APIs & Services > Credentials > Create Credentials > OAuth client ID > "
+                            + "TVs and Limited Input devices.\n"
+                            + "4. Copy the client ID (ends in .apps.googleusercontent.com) and send it to me — "
+                            + "it is not a secret — and I will bake it into the next build.\n\n"
+                            + "If the consent screen stays in Testing, add your Google account under Test users.")
+                    .setPositiveButton("OK", null)
+                    .show();
+            return;
+        }
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        int pad = dp(16);
+        col.setPadding(pad, pad, pad, pad);
+
+        TextView t1 = new TextView(this);
+        t1.setText("On your phone, open:");
+        t1.setTextColor(Color.GRAY);
+        col.addView(t1);
+
+        TextView t2 = new TextView(this);
+        t2.setText("google.com/device");
+        t2.setTextSize(20);
+        t2.setTextColor(Color.WHITE);
+        t2.setPadding(0, dp(4), 0, dp(4));
+        col.addView(t2);
+
+        TextView t3 = new TextView(this);
+        t3.setText("and enter this code:");
+        t3.setTextColor(Color.GRAY);
+        col.addView(t3);
+
+        final TextView codeView = new TextView(this);
+        codeView.setText("Requesting code…");
+        codeView.setTextSize(32);
+        codeView.setTextColor(Color.parseColor("#E8A33D"));
+        codeView.setTypeface(codeView.getTypeface(), android.graphics.Typeface.BOLD);
+        codeView.setGravity(android.view.Gravity.CENTER);
+        codeView.setPadding(0, dp(8), 0, dp(8));
+        col.addView(codeView);
+
+        final ImageView qrView = new ImageView(this);
+        col.addView(qrView);
+
+        final TextView status = new TextView(this);
+        status.setText("Waiting…");
+        status.setTextColor(Color.GRAY);
+        status.setGravity(android.view.Gravity.CENTER);
+        status.setPadding(0, dp(12), 0, 0);
+        col.addView(status);
+
+        AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("Sign in with Google")
+                .setView(col)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dlg.setOnDismissListener(d -> {
+            if (currentGooglePoll != null) {
+                currentGooglePoll.cancel();
+                currentGooglePoll = null;
+            }
+        });
+        dlg.show();
+
+        GoogleAccount.requestDeviceCode(new GoogleAccount.Callback<GoogleAccount.DeviceCode>() {
+            @Override
+            public void onResult(GoogleAccount.DeviceCode d) {
+                codeView.setText(d.userCode);
+                String qrTarget = (d.verificationUrlComplete != null
+                        && !d.verificationUrlComplete.isEmpty())
+                        ? d.verificationUrlComplete : d.verificationUrl;
+                try {
+                    qrView.setImageBitmap(qrBitmap(qrTarget, dp(240)));
+                } catch (Exception ignored) {
+                    // Code text alone is enough.
+                }
+                status.setText("Enter the code on your phone.\nThis screen waits for your approval…");
+                currentGooglePoll = GoogleAccount.pollForToken(MainActivity.this, d,
+                        new GoogleAccount.Callback<GoogleAccount.Profile>() {
+                            @Override
+                            public void onResult(GoogleAccount.Profile p) {
+                                currentGooglePoll = null;
+                                dlg.dismiss();
+                                refreshAccountLabel();
+                                Toast.makeText(MainActivity.this,
+                                        "Signed in as " + p.name,
+                                        Toast.LENGTH_SHORT).show();
+                                selectMenu(5, false);
+                            }
+
+                            @Override
+                            public void onError(Exception e) {
+                                currentGooglePoll = null;
+                                status.setText("Sign-in failed: " + e.getMessage());
+                            }
+                        });
+            }
+
+            @Override
+            public void onError(Exception e) {
+                codeView.setText("—");
+                status.setText("Could not start sign-in: " + e.getMessage());
+            }
+        });
+    }
+
     /** TV-friendly dialog: paste any Stremio addon manifest URL to install it. */
     private void showInstallUrlDialog() {        final EditText input = new EditText(this);
         input.setHint("https://…");
@@ -1423,7 +1573,55 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.10.7 (build 32)");
+        // Google Account (v0.10.8 device-code sign-in)
+        TextView gh = new TextView(this);
+        gh.setText("Google Account");
+        gh.setTextSize(22);
+        gh.setTextColor(Color.WHITE);
+        gh.setPadding(0, dp(8), 0, dp(4));
+        col.addView(gh);
+
+        TextView gStatus = new TextView(this);
+        if (GoogleAccount.isSignedIn(this)) {
+            String n = GoogleAccount.displayName(this);
+            String e = GoogleAccount.displayEmail(this);
+            gStatus.setText("Signed in as " + (n != null ? n : "")
+                    + (e != null && !e.isEmpty() ? "\n" + e : ""));
+        } else {
+            gStatus.setText("Not signed in.\nSign in with your Google account on your phone.");
+        }
+        gStatus.setTextColor(Color.GRAY);
+        gStatus.setPadding(0, 0, 0, dp(8));
+        col.addView(gStatus);
+
+        Button gBtn = new Button(this);
+        gBtn.setFocusable(true);
+        if (GoogleAccount.isSignedIn(this)) {
+            gBtn.setText("Sign out");
+            gBtn.setOnClickListener(v -> GoogleAccount.signOut(MainActivity.this,
+                    new GoogleAccount.Callback<Void>() {
+                        @Override
+                        public void onResult(Void r) {
+                            refreshAccountLabel();
+                            Toast.makeText(MainActivity.this,
+                                    "Signed out", Toast.LENGTH_SHORT).show();
+                            selectMenu(5, false);
+                        }
+
+                        @Override
+                        public void onError(Exception e) {
+                            refreshAccountLabel();
+                            selectMenu(5, false);
+                        }
+                    }));
+        } else {
+            gBtn.setText("Sign in with Google");
+            gBtn.setOnClickListener(v -> showGoogleSignInDialog());
+        }
+        col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        addSettingRow(col, "Version", "0.10.8 (build 33)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
