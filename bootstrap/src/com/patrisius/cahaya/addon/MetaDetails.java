@@ -14,6 +14,7 @@ public class MetaDetails {
     public String releaseInfo;
     public String genres;   // comma-joined, e.g. "Drama, Action"
     public String rating;   // IMDb rating string, e.g. "8.2"
+    public int moviedbId;   // Cinemeta "moviedb_id" (0 = absent); JS scraper key
     public final List<VideoInfo> videos = new ArrayList<>();
 
     public static class VideoInfo {

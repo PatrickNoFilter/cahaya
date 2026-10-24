@@ -100,6 +100,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     // ---- intent
     private String streamUrl, title, type, videoId;
+    private String streamHeaders; // "Key: Value" lines, or null
     private double startPos;
 
     // ---- state
@@ -156,6 +157,12 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
 
         streamUrl = getIntent().getStringExtra("url");
+        streamHeaders = getIntent().getStringExtra("headers");
+        // mpv log file for diagnosis (pullable via root adb, unlike logcat)
+        try {
+            java.io.File dir = getExternalFilesDir(null);
+            if (dir != null) MPVLib.setLogFile(new java.io.File(dir, "mpv.log"));
+        } catch (Exception ignored) { }
         title = getIntent().getStringExtra("title");
         if (title == null) title = "Video";
         type = getIntent().getStringExtra("type");
@@ -420,6 +427,24 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             MPVLib.setOptionString("cache", "yes");
             MPVLib.setOptionString("cache-secs", "10");
             MPVLib.setOptionString("idle", "yes");
+            // mpv's default UA gets bot-blocked by several file hosts
+            // (Cloudflare 403 on R2 links); a browser UA is the
+            // standard workaround and harms nothing for torrents.
+            MPVLib.setOptionString("user-agent",
+                    "Mozilla/5.0 (Linux; Android 11; B866F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+            // mpv's bundled CA store fails TLS verification for some
+            // file hosts (playimdb's host, 2026-10-24: "TLS certificate
+            // verification failed" in mpv.log, while the same cert
+            // verifies against a modern bundle). Playback streams carry
+            // no sensitive data, so skip TLS verification for mpv
+            // only; Java fetches (addons, scrapers) still verify.
+            MPVLib.setOptionString("tls-verify", "no");
+            // Provider-required headers at init time, not just before
+            // loadfile: late option changes may be ignored by mpv.
+            if (streamHeaders != null && !streamHeaders.isEmpty()) {
+                MPVLib.setOptionString("http-header-fields",
+                        streamHeaders.replace("\n", ","));
+            }
             // Subtitle behaviour (same intent as NuvioTV's initOptions).
             MPVLib.setOptionString("sub-ass-override", "no");
             MPVLib.setOptionString("sub-codepage", "auto:utf-8");

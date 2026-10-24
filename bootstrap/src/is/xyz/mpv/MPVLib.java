@@ -93,10 +93,33 @@ public class MPVLib {
         if (observer != null) observer.event(eventId);
     }
 
+    // Diagnostic file log: box logcat rotates in ~1 min and logd
+    // itself crashed 2026-10-24, so mpv errors are otherwise invisible.
+    // PlayerActivity sets this file; logMessage appends to it too.
+    public static java.io.File logFile = null;
+
+    public static void setLogFile(java.io.File f) {
+        logFile = f;
+        if (f != null) {
+            try {
+                java.io.FileWriter w = new java.io.FileWriter(f, false);
+                w.write("mpv log start\n");
+                w.close();
+            } catch (Exception ignored) { }
+        }
+    }
+
     // Called from native code for logging
     @SuppressWarnings("unused")
     public static void logMessage(String prefix, int level, String text) {
         // Log to Android logcat; level is mpv log level
         android.util.Log.d("mpv", prefix + ": " + text);
+        if (logFile != null) {
+            try {
+                java.io.FileWriter w = new java.io.FileWriter(logFile, true);
+                w.write(prefix + ": " + text + "\n");
+                w.close();
+            } catch (Exception ignored) { }
+        }
     }
 }

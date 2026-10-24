@@ -8,6 +8,10 @@ public class StreamItem {
     public final int fileIdx; // torrent file index (-1 = not a torrent / unknown)
     public int seeders = -1; // parsed from Torrentio-style titles (-1 = unknown)
     public String size = null; // e.g. "6.91 GB" (null = unknown)
+    /** HTTP headers the provider requires for playback, e.g. PlayIMDb's
+     *  Origin/Referer/User-Agent. Null = none. Carried to mpv via the
+     *  PlayerActivity intent; without them such streams 403. */
+    public java.util.Map<String, String> headers = null;
 
     public StreamItem(String url, String title, String source) {
         this(url, title, source, -1);

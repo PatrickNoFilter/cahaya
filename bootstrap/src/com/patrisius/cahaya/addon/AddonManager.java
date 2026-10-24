@@ -174,6 +174,7 @@ public class AddonManager {
                             d.description = m.optString("description", "");
                             d.releaseInfo = m.optString("releaseInfo",
                                     m.optString("year", ""));
+                            d.moviedbId = m.optInt("moviedb_id", 0);
                             JSONArray genres = m.optJSONArray("genres");
                             if (genres != null) {
                                 StringBuilder g = new StringBuilder();

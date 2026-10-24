@@ -29,6 +29,7 @@ import com.patrisius.cahaya.addon.SubtitleItem;
 import com.patrisius.cahaya.torrent.TorrentStreamer;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
+import com.patrisius.cahaya.jsrunner.JsScraperRunner;
 import com.patrisius.cahaya.scraper.FibWatchScraper;
 import com.patrisius.cahaya.scraper.Scraper;
 
@@ -213,8 +214,9 @@ public class DetailsActivity extends Activity {
             }
         }
         // +1: the in-app FibWatch scraper (3rd way, no server, no JS).
+        // +2: the WebView JS scrapers (2nd way, 4khdhub + playimdb).
         final AtomicInteger pending =
-                new AtomicInteger(addonUrls.size() + enabledPlugins.size() + 1);
+                new AtomicInteger(addonUrls.size() + enabledPlugins.size() + 3);
         if (pending.get() == 0) {
             progress.dismiss();
             Toast.makeText(this, "No addons or plugins installed", Toast.LENGTH_SHORT).show();
@@ -300,6 +302,30 @@ public class DetailsActivity extends Activity {
                         collect.onError(e);
                     }
                 });
+        // WebView JS scrapers (2nd way): each provider runs in its own
+        // headless WebView. Needs Cinemeta's moviedb_id; if the meta
+        // has none, the runner fails fast and contributes nothing.
+        // Fail-soft: a dead WebView never blocks the picker.
+        String[] jsProviders = {
+                JsScraperRunner.PROVIDER_4KHDHUB,
+                JsScraperRunner.PROVIDER_PLAYIMDB,
+        };
+        for (String pid : jsProviders) {
+            final String providerId = pid;
+            new JsScraperRunner(this, providerId).run(details.moviedbId, itemType,
+                    scraperSeason, scraperEpisode,
+                    new JsScraperRunner.Callback() {
+                        @Override
+                        public void onResult(List<StreamItem> items) {
+                            collect.onResult(items);
+                        }
+
+                        @Override
+                        public void onError(String message) {
+                            collect.onError(new Exception(message));
+                        }
+                    });
+        }
     }
 
     private void showStreamPicker(String title, String videoId, List<StreamItem> streams) {
@@ -336,6 +362,14 @@ public class DetailsActivity extends Activity {
                     i.putExtra("type", itemType);
                     i.putExtra("video_id", videoId);
                     i.putExtra("poster", details.poster);
+                    if (s.headers != null && !s.headers.isEmpty()) {
+                        StringBuilder hb = new StringBuilder();
+                        for (java.util.Map.Entry<String, String> e : s.headers.entrySet()) {
+                            if (hb.length() > 0) hb.append("\n");
+                            hb.append(e.getKey()).append(": ").append(e.getValue());
+                        }
+                        i.putExtra("headers", hb.toString());
+                    }
                     // Pass resume position if coming from Continue Watching
                     double resume = getIntent().getDoubleExtra("resume_pos", 0);
                     if (resume > 0) i.putExtra("start_pos", resume);
