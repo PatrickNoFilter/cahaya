@@ -363,6 +363,8 @@ public class MainActivity extends Activity {
         return scroll;
     }
 
+    private boolean heroAdded = false;
+
     private void loadRow(String type, String id, String header) {
         mgr.catalog(AddonManager.DEFAULT_ADDON, type, id,
                 new AddonManager.Callback<List<CatalogItem>>() {
@@ -373,6 +375,11 @@ public class MainActivity extends Activity {
                             homeStatus.setVisibility(View.GONE);
                         }
                         if (homeRows != null) {
+                            // Add hero banner with first movie (reference UI style)
+                            if (!heroAdded && type.equals("movie") && !items.isEmpty()) {
+                                heroAdded = true;
+                                homeRows.addView(makeHero(items.get(0)), 0);
+                            }
                             homeRows.addView(makeRow(header, items));
                         }
                     }
@@ -384,6 +391,73 @@ public class MainActivity extends Activity {
                         }
                     }
                 });
+    }
+
+    /** Hero banner in the style of the reference UI: large backdrop, title, meta. */
+    private View makeHero(CatalogItem item) {
+        FrameLayout hero = new FrameLayout(this);
+        int heroH = dp(320);
+        hero.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, heroH));
+        hero.setPadding(0, 0, 0, dp(16));
+
+        // Backdrop (poster scaled to fill, with dark gradient overlay)
+        ImageView bg = new ImageView(this);
+        bg.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        bg.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        hero.addView(bg);
+        loadPoster(item.poster, bg);
+
+        // Dark gradient overlay (bottom half)
+        View shade = new View(this);
+        shade.setBackgroundColor(Color.parseColor("#AA000000"));
+        FrameLayout.LayoutParams shadeLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(160));
+        shadeLp.gravity = android.view.Gravity.BOTTOM;
+        hero.addView(shade, shadeLp);
+
+        // Text content (bottom-left)
+        LinearLayout text = new LinearLayout(this);
+        text.setOrientation(LinearLayout.VERTICAL);
+        text.setPadding(dp(24), 0, dp(24), dp(24));
+        FrameLayout.LayoutParams textLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        textLp.gravity = android.view.Gravity.BOTTOM;
+        hero.addView(text, textLp);
+
+        TextView badge = new TextView(this);
+        badge.setText("★ FEATURED");
+        badge.setTextSize(12);
+        badge.setTextColor(Color.parseColor("#E8A33D"));
+        text.addView(badge);
+
+        TextView title = new TextView(this);
+        title.setText(item.name);
+        title.setTextSize(32);
+        title.setTextColor(Color.WHITE);
+        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
+        text.addView(title);
+
+        TextView meta = new TextView(this);
+        meta.setText(item.type.equals("series") ? "Series" : "Movie");
+        meta.setTextSize(14);
+        meta.setTextColor(Color.parseColor("#B0B0B0"));
+        text.addView(meta);
+
+        // Click opens details
+        hero.setFocusable(true);
+        hero.setClickable(true);
+        hero.setOnClickListener(v -> {
+            Intent i = new Intent(MainActivity.this, DetailsActivity.class);
+            i.putExtra("id", item.id);
+            i.putExtra("type", item.type);
+            startActivity(i);
+        });
+
+        return hero;
     }
 
     private View makeRow(String header, List<CatalogItem> items) {
