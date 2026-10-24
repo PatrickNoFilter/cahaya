@@ -45,7 +45,7 @@ import java.util.concurrent.Executors;
  */
 public class GoogleAccount {
 
-    public static final String CLIENT_ID = "1075062656076-6ddc1c67off2sqsjg7peejqlfkv9pmi6.apps.googleusercontent.com";
+    public static final String CLIENT_ID = "1075062656076-n02k3189vrv84doe8aiccaalq1lkjkme.apps.googleusercontent.com";
     /** Injected at build time from Notion; placeholder in git. */
     public static final String CLIENT_SECRET = "YOUR_TV_CLIENT_SECRET";
     public static final String SCOPE = "email profile";
