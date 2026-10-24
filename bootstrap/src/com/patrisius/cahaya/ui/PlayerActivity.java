@@ -688,6 +688,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private static String getAidSafe() {
         try { return MPVLib.getPropertyString("aid"); } catch (Throwable t) { return "?"; }
     }
+    private static boolean eq(String a, String b) {
+        return a == null ? b == null : a.equals(b);
+    }
 
     private void buildSubtitlePanel() {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
@@ -1059,7 +1062,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         List<MpvTrack> tracks = MpvTrack.read("audio");
         diagAudio("panel open: " + tracks.size() + " tracks, current aid=" + getAidSafe());
         for (MpvTrack t : tracks) {
-            diagAudio("  track id=" + t.id + " lang=" + t.lang + " codec=" + t.codec + " ch=" + t.channels);
+            diagAudio("  track id=" + t.id + " lang=" + t.lang + " codec=" + t.codec);
         }
         if (tracks.isEmpty()) {
             panel.note("No audio tracks reported yet.");
@@ -1069,34 +1072,41 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             for (MpvTrack t : tracks) t.selected = (t.id == selectedAudioId);
         }
         for (final MpvTrack t : tracks) {
-            // TV-friendly label: Language · Codec Channels (e.g. "English · AAC Stereo")
+            // TV-friendly label: Language · Title (e.g. "English · GalaxyTV")
+            // Note: channel count from demux-channel-count is unreliable (returns garbage like 97),
+            // so we don't display it. Codec is shown.
             String lang = (t.lang != null && !t.lang.isEmpty()) ? LangUtil.display(t.lang) : "Unknown";
             String label = lang;
             if (t.title != null && !t.title.isEmpty() && !t.title.equalsIgnoreCase(lang)
                     && !t.title.equalsIgnoreCase(t.lang)) {
                 label += " · " + t.title;
             }
-            String codec = (t.codec != null && !t.codec.isEmpty()) ? t.codec.toUpperCase() : "";
-            String ch = t.channels == 2 ? "Stereo" : t.channels == 6 ? "5.1 Surround"
-                    : t.channels == 8 ? "7.1 Surround" : t.channels > 0 ? t.channels + " channels" : "";
-            String detail = codec + (ch.isEmpty() ? "" : " · " + ch);
-            if (t.isDefault) detail += " · Default";
+            String detail = (t.codec != null && !t.codec.isEmpty()) ? t.codec.toUpperCase() : "";
+            if (t.isDefault) detail += (detail.isEmpty() ? "" : " · ") + "Default";
             final String fLabel = label;
-            final String fCodec = t.codec;
             final String fLang = t.lang;
-            final int fId = t.id;
+            final String fCodec = t.codec;
             panel.row(label, detail, t.selected, () -> {
-                diagAudio("user select id=" + fId + " lang=" + fLang + " codec=" + fCodec);
+                // Re-read tracks to get fresh ID (IDs can shift); match by lang+codec
+                List<MpvTrack> fresh = MpvTrack.read("audio");
+                int useId = -1;
+                for (MpvTrack ft : fresh) {
+                    if (eq(ft.lang, fLang) && eq(ft.codec, fCodec)) { useId = ft.id; break; }
+                }
+                if (useId < 0 && !fresh.isEmpty()) useId = fresh.get(0).id; // fallback
+                diagAudio("user select lang=" + fLang + " codec=" + fCodec + " -> fresh id=" + useId);
                 try {
-                    MPVLib.setPropertyString("aid", String.valueOf(fId));
-                    // Verify what mpv actually selected
+                    MPVLib.setPropertyString("aid", String.valueOf(useId));
                     String actualAid = MPVLib.getPropertyString("aid");
                     String aCodec = MPVLib.getPropertyString("audio-codec-name");
                     diagAudio("after select: aid=" + actualAid + " audio-codec=" + aCodec);
+                    if (!String.valueOf(useId).equals(actualAid)) {
+                        diagAudio("WARNING: mpv did not accept aid=" + useId);
+                    }
                 } catch (Throwable e) {
                     diagAudio("select failed: " + e);
                 }
-                selectedAudioId = fId;
+                selectedAudioId = useId;
                 hint("Audio: " + fLabel);
                 schedulePanelRefresh();
             });
