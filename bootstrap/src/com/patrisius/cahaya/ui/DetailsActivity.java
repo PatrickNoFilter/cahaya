@@ -29,6 +29,8 @@ import com.patrisius.cahaya.addon.SubtitleItem;
 import com.patrisius.cahaya.torrent.TorrentStreamer;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
+import com.patrisius.cahaya.scraper.FibWatchScraper;
+import com.patrisius.cahaya.scraper.Scraper;
 
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -210,8 +212,9 @@ public class DetailsActivity extends Activity {
                 enabledPlugins.add(p);
             }
         }
+        // +1: the in-app FibWatch scraper (3rd way, no server, no JS).
         final AtomicInteger pending =
-                new AtomicInteger(addonUrls.size() + enabledPlugins.size());
+                new AtomicInteger(addonUrls.size() + enabledPlugins.size() + 1);
         if (pending.get() == 0) {
             progress.dismiss();
             Toast.makeText(this, "No addons or plugins installed", Toast.LENGTH_SHORT).show();
@@ -267,6 +270,36 @@ public class DetailsActivity extends Activity {
                         }
                     });
         }
+        // In-app scraper (3rd way): searches by Cinemeta title/year,
+        // not by video id — episode title is NOT used, the series
+        // title is, so episodes resolve to the right series page.
+        int scraperYear = 0;
+        if (details.releaseInfo != null) {
+            java.util.regex.Matcher ym = java.util.regex.Pattern
+                    .compile("\\b(19|20)\\d{2}\\b")
+                    .matcher(details.releaseInfo);
+            if (ym.find()) {
+                try {
+                    scraperYear = Integer.parseInt(ym.group());
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        int scraperSeason = vi != null ? vi.season : 0;
+        int scraperEpisode = vi != null ? vi.episode : 0;
+        new FibWatchScraper().getStreams(details.name, scraperYear,
+                itemType, scraperSeason, scraperEpisode,
+                new Scraper.Callback() {
+                    @Override
+                    public void onResult(List<StreamItem> items) {
+                        collect.onResult(items);
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        collect.onError(e);
+                    }
+                });
     }
 
     private void showStreamPicker(String title, String videoId, List<StreamItem> streams) {
