@@ -905,17 +905,20 @@ public class MainActivity extends Activity {
     private View makeCard(final CatalogItem item) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        int w = dp(140);
+        // v0.10.5: was 140dp wide / 200dp tall — shrunk ~20% so more
+        // titles fit per row and each row takes less vertical space
+        // under the pinned hero.
+        int w = dp(110);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 w, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, 0, dp(12), 0);
+        lp.setMargins(0, 0, dp(10), 0);
         card.setLayoutParams(lp);
         card.setFocusable(true);
         card.setClickable(true);
         card.setPadding(dp(4), dp(4), dp(4), dp(4));
 
         ImageView poster = new ImageView(this);
-        poster.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(200)));
+        poster.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(160)));
         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
         poster.setBackgroundColor(Color.parseColor("#23262B"));
         card.addView(poster);
@@ -1396,7 +1399,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.10.4 (build 29)");
+        addSettingRow(col, "Version", "0.10.5 (build 30)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
