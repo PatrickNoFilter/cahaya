@@ -1096,12 +1096,19 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 if (useId < 0 && !fresh.isEmpty()) useId = fresh.get(0).id; // fallback
                 diagAudio("user select lang=" + fLang + " codec=" + fCodec + " -> fresh id=" + useId);
                 try {
+                    // Try specific ID first, fall back to auto if mpv rejects it
+                    // (track IDs can be unstable on some streams)
                     MPVLib.setPropertyString("aid", String.valueOf(useId));
                     String actualAid = MPVLib.getPropertyString("aid");
+                    if ("no".equals(actualAid)) {
+                        diagAudio("ID rejected, trying aid=auto");
+                        MPVLib.setPropertyString("aid", "auto");
+                        actualAid = MPVLib.getPropertyString("aid");
+                    }
                     String aCodec = MPVLib.getPropertyString("audio-codec-name");
                     diagAudio("after select: aid=" + actualAid + " audio-codec=" + aCodec);
-                    if (!String.valueOf(useId).equals(actualAid)) {
-                        diagAudio("WARNING: mpv did not accept aid=" + useId);
+                    if ("no".equals(actualAid)) {
+                        diagAudio("WARNING: mpv has no audio (aid=no)");
                     }
                 } catch (Throwable e) {
                     diagAudio("select failed: " + e);
