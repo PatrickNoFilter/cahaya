@@ -64,6 +64,11 @@ public class MainActivity extends Activity {
     private LinearLayout sidebar;
     private FrameLayout content;
     private ImageView brandLogo;
+    // v0.10.7: infoBar REMOVED — it showed the focused title/menu name in
+    // a 64dp bar above the content, duplicating the adaptive banner which
+    // already shows the title. Field + updateInfo() kept (null-safe no-op)
+    // so existing call sites need no changes; content now fills the full
+    // height and the banner sits at the very top.
     private TextView infoBar;
     private final List<LinearLayout> menuRows = new ArrayList<>();
     private final List<TextView> menuLabels = new ArrayList<>();
@@ -182,16 +187,8 @@ public class MainActivity extends Activity {
         root.addView(contentCol, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        infoBar = new TextView(this);
-        infoBar.setTextSize(20);
-        infoBar.setSingleLine(true);
-        infoBar.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        infoBar.setTextColor(Color.WHITE);
-        infoBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        infoBar.setPadding(dp(28), 0, dp(28), 0);
-        contentCol.addView(infoBar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(64)));
-
+        // No top name bar anymore (v0.10.7): the adaptive banner is the
+        // title now, so content starts at the very top and gains 64dp.
         content = new FrameLayout(this);
         content.setPadding(dp(28), dp(8), dp(28), dp(28));
         contentCol.addView(content, new LinearLayout.LayoutParams(
@@ -1426,7 +1423,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.10.6 (build 31)");
+        addSettingRow(col, "Version", "0.10.7 (build 32)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
