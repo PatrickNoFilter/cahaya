@@ -385,7 +385,24 @@ public class MainActivity extends Activity {
         if (!homeLoaded) {
             homeLoaded = true;
             loadRow("movie", "top", "Popular Movies");
-            loadRow("series", "top", "Popular Series");
+            loadRowFrom(AddonManager.DEFAULT_ADDON, "series", "top",
+                    null, "Popular Series", false);
+            // Asian rows (v0.10.6): Nuvio's by-language catalogs, already
+            // a built-in addon — ids are IMDb tt ids, so details/streams
+            // work exactly like the Cinemeta rows above.
+            String nuvio = AddonManager.NUVIO_CATALOG;
+            loadRowFrom(nuvio, "movie", "movies-by-language",
+                    "genre=Japanese", "Japanese Movies", false);
+            loadRowFrom(nuvio, "series", "series-by-language",
+                    "genre=Japanese", "Japanese Series", false);
+            loadRowFrom(nuvio, "movie", "movies-by-language",
+                    "genre=Korean", "Korean Movies", false);
+            loadRowFrom(nuvio, "series", "series-by-language",
+                    "genre=Korean", "Korean Series", false);
+            loadRowFrom(nuvio, "movie", "movies-by-language",
+                    "genre=Chinese", "Chinese Movies", false);
+            loadRowFrom(nuvio, "series", "series-by-language",
+                    "genre=Chinese", "Chinese Series", false);
         } else if (!allItems.isEmpty()) {
             homeStatus.setVisibility(View.GONE);
         }
@@ -547,7 +564,17 @@ public class MainActivity extends Activity {
             new java.util.HashMap<>();
 
     private void loadRow(String type, String id, String header) {
-        mgr.catalog(AddonManager.DEFAULT_ADDON, type, id,
+        loadRowFrom(AddonManager.DEFAULT_ADDON, type, id, null, header, true);
+    }
+
+    /**
+     * Load one Home row from any addon catalog. seedHero=true only for
+     * Popular Movies: the first item of that row becomes the initial
+     * banner; other rows must not steal the banner if they reply first.
+     */
+    private void loadRowFrom(String baseUrl, String type, String id,
+            String extra, String header, final boolean seedHero) {
+        mgr.catalogExtra(baseUrl, type, id, extra,
                 new AddonManager.Callback<List<CatalogItem>>() {
                     @Override
                     public void onResult(List<CatalogItem> items) {
@@ -570,7 +597,7 @@ public class MainActivity extends Activity {
                                     heroSlot.addView(heroView);
                                 }
                             }
-                            if (heroItem == null && !items.isEmpty()) {
+                            if (seedHero && heroItem == null && !items.isEmpty()) {
                                 updateHero(items.get(0));
                             }
                             homeRows.addView(makeRow(header, items));
@@ -1399,7 +1426,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
-        addSettingRow(col, "Version", "0.10.5 (build 30)");
+        addSettingRow(col, "Version", "0.10.6 (build 31)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");

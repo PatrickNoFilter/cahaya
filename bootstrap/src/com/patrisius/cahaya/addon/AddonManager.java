@@ -28,6 +28,9 @@ public class AddonManager {
 
     /** Default addon installed on first run. */
     public static final String DEFAULT_ADDON = "https://v3-cinemeta.strem.io";
+    /** Nuvio TMDB catalog addon: the only built-in source with
+     *  movies/series-by-language catalogs (Japanese, Korean, Chinese). */
+    public static final String NUVIO_CATALOG = "https://catalog.nuvio.tv";
     /** Default subtitle addon installed on first run (keyless community subs). */
     public static final String SUBTITLES_DEFAULT = "https://subsource.strem.top";
     /** More defaults: streams + extra subtitles. Empty results are tolerated. */
@@ -416,10 +419,24 @@ public class AddonManager {
     /** GET {base}/catalog/{type}/{id}.json -> items. */
     public void catalog(String baseUrl, String type, String catalogId,
                         Callback<List<CatalogItem>> cb) {
+        catalogExtra(baseUrl, type, catalogId, null, cb);
+    }
+
+    /**
+     * GET {base}/catalog/{type}/{id}/{extra}.json -> items, e.g. Nuvio's
+     * movies-by-language catalog with extra "genre=Japanese". Null extra
+     * behaves exactly like catalog().
+     */
+    public void catalogExtra(String baseUrl, String type, String catalogId,
+                        String extra, Callback<List<CatalogItem>> cb) {
         io.execute(() -> {
             try {
-                String body = fetchText(
-                        baseUrl + "/catalog/" + type + "/" + catalogId + ".json");
+                String url = baseUrl + "/catalog/" + type + "/" + catalogId;
+                if (extra != null && !extra.isEmpty()) {
+                    url += "/" + extra;
+                }
+                url += ".json";
+                String body = fetchText(url);
                 JSONObject root = new JSONObject(body);
                 JSONArray metas = root.optJSONArray("metas");
                 List<CatalogItem> out = new ArrayList<>();
