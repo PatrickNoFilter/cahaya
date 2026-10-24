@@ -34,6 +34,7 @@ import com.patrisius.cahaya.addon.SubtitleItem;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
 import com.patrisius.cahaya.torrent.TorrentStreamer;
+import com.patrisius.cahaya.ui.player.CueParser;
 import com.patrisius.cahaya.ui.player.LangUtil;
 import com.patrisius.cahaya.ui.player.MpvTrack;
 import com.patrisius.cahaya.ui.player.PlayerButton;
@@ -41,10 +42,12 @@ import com.patrisius.cahaya.ui.player.PlayerTheme;
 import com.patrisius.cahaya.ui.player.ScrubRates;
 import com.patrisius.cahaya.ui.player.SeekTrack;
 import com.patrisius.cahaya.ui.player.SidePanel;
+import com.patrisius.cahaya.ui.player.SubtitleCue;
 import com.patrisius.cahaya.ui.player.SubtitleLoader;
 import com.patrisius.cahaya.ui.player.SubtitleOverlay;
 import com.patrisius.cahaya.ui.player.SubtitlePrefs;
 import com.patrisius.cahaya.ui.player.SubtitleRanker;
+import com.patrisius.cahaya.ui.player.SubtitleSelection;
 import com.patrisius.cahaya.ui.player.TimeFmt;
 
 import java.io.File;
@@ -112,11 +115,18 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private List<SubtitleItem> onlineRanked = new ArrayList<>();
     /** Online subtitles currently downloading (guards double clicks). */
     private final Set<String> loadingUrls = new HashSet<>();
-    /** Online subtitle URL -> the mpv track id it was loaded as. Keeps it listed (and tickable) after use. */
-    private final Map<String, Integer> onlineTrackId = new HashMap<>();
-    private static final int SEL_UNKNOWN = -2, SEL_OFF = -1;
-    /** What WE last selected (track id, or SEL_OFF). SEL_UNKNOWN = trust mpv's own "sid". */
-    private int ownSubSel = SEL_UNKNOWN;
+    /** Parsed cues per online subtitle URL, so switching back is instant. */
+    private final Map<String, List<SubtitleCue>> cueCache = new HashMap<>();
+    /** mpv track ids created by the sub-add fallback (unparseable online files); hidden from "In this video". */
+    private final Set<Integer> fallbackTrackIds = new HashSet<>();
+    /**
+     * THE source of truth for the picker's tick: what the user (or auto-select) chose.
+     * Never derived from mpv's sid / track ids, so the tick can't disagree with the UI.
+     */
+    private SubtitleSelection sel = SubtitleSelection.OFF;
+    /** Language of an image-based (PGS) track the user picked while the online list was still loading. */
+    private String wantLang;
+    private volatile boolean loggedMpvText;
     private boolean subsLoading, onlineExpanded, autoSubDone;
     private int subDelayMs, aspectMode, speedIdx = 2;
 
@@ -124,7 +134,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private final Runnable hideHint = () -> hintView.setVisibility(View.GONE);
     private final Runnable progressTick = new Runnable() {
         @Override public void run() {
-            if (!paused && mpvTimePos < 0) manualPos += 1.0;   // fallback if mpv never reports time-pos
+            if (!paused && mpvTimePos < 0) { manualPos += 1.0; subtitleOverlay.onTime(manualPos); }   // fallback if mpv never reports time-pos
             updateProgress();
             main.postDelayed(this, 1000);
         }
@@ -450,6 +460,12 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void onFileLoaded() {
         fileLoaded = true;
         prefs.applyToMpv();
+        StringBuilder dump = new StringBuilder();
+        for (MpvTrack t : MpvTrack.read("sub"))
+            dump.append("\n  sub id=").append(t.id).append(" lang=").append(t.lang).append(" codec=").append(t.codec)
+                    .append(t.isImage() ? " IMAGE" : " text").append(t.forced ? " forced" : "")
+                    .append(t.external ? " external" : "").append(t.selected ? " <selected by mpv>" : "");
+        diag("file loaded; preferred=" + prefs.preferredLang + dump);
         if (startPos > 5) seekAbs(startPos);
         if (subDelayMs != 0) try { MPVLib.setPropertyDouble("sub-delay", subDelayMs / 1000.0); } catch (Throwable ignored) {}
         showController();
@@ -665,28 +681,30 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     // ---- subtitles ------------------------------------------------------
 
+    /** Goes to logcat under the "mpv" tag so it shows up in the same capture as mpv's own output. */
+    private static void diag(String m) { android.util.Log.i("mpv", "CahayaSub: " + m); }
+
     private void buildSubtitlePanel() {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
         panel.begin("Subtitles");
         List<MpvTrack> tracks = MpvTrack.read("sub");
-        final int sel = currentSubSel(tracks);
 
-        panel.row("Off", null, sel == SEL_OFF, () -> { disableSubtitles(); autoSubDone = true; rebuildPanel(); });
+        panel.row("Off", null, sel.isOff(), () -> { disableSubtitles(); autoSubDone = true; rebuildPanel(); });
 
-        // Built-in tracks only; online subtitles that mpv loaded as external tracks stay in the Online list.
         List<MpvTrack> builtIn = new ArrayList<>();
-        for (MpvTrack t : tracks) if (!onlineTrackId.containsValue(t.id)) builtIn.add(t);
+        for (MpvTrack t : tracks) if (!fallbackTrackIds.contains(t.id)) builtIn.add(t);
         if (!builtIn.isEmpty()) {
             panel.section("In this video");
             int text = 0, image = 0;
             for (final MpvTrack t : builtIn) {
                 if (t.isImage()) image++; else text++;
-                panel.row(t.label(), t.detail(), t.id == sel, () -> { selectSubtitle(t); autoSubDone = true; rebuildPanel(); });
+                panel.row(t.label(), t.detail(), sel.isEmbedded(t.id),
+                        () -> { selectEmbedded(t); autoSubDone = true; rebuildPanel(); });
             }
             if (image > 0 && text == 0)
-                panel.note("These built-in subtitles are image-based (PGS / VobSub). The direct video renderer can't draw them, so use an online subtitle below.");
+                panel.note("These are image-based (PGS / VobSub) and can't be drawn by this player. Choosing one loads the matching online subtitle instead.");
             else if (image > 0)
-                panel.note("Tracks marked \"Image\" can't be drawn by the direct video renderer.");
+                panel.note("Tracks marked \"Image\" can't be drawn here; choosing one loads the matching online subtitle instead.");
         }
 
         panel.section("Online subtitles");
@@ -697,7 +715,6 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                     ? "Online search isn't available for this stream."
                     : "None found. Install a subtitle addon from Cahaya's addon screen.");
         }
-        // Keep the one in use visible even when the list is collapsed.
         int limit = onlineExpanded ? shown.size() : Math.min(ONLINE_LIMIT, shown.size());
         Map<String, Integer> perLang = new HashMap<>();
         for (int i = 0; i < shown.size(); i++) {
@@ -705,12 +722,12 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             String lang = LangUtil.display(s.lang);
             int n = perLang.containsKey(lang) ? perLang.get(lang) + 1 : 1;
             perLang.put(lang, n);
-            Integer tid = onlineTrackId.get(s.url);
-            boolean active = tid != null && tid == sel;
-            if (i >= limit && !active) continue;
+            boolean active = sel.isOnline(s.url);
+            if (i >= limit && !active) continue;          // the one in use stays visible when collapsed
             String detail = s.label == null ? "" : s.label;
             int cut = detail.indexOf("· ");
             if (cut >= 0) detail = detail.substring(cut + 2);
+            if (loadingUrls.contains(s.url)) detail = "Loading…";
             panel.row(n > 1 ? lang + " " + n : lang, detail, active, () -> useOnlineSubtitle(s));
         }
         if (limit < shown.size()) {
@@ -729,33 +746,46 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panel.end(restore);
     }
 
-    /** Which subtitle is showing: our own last choice if we made one, otherwise whatever mpv picked. */
-    private int currentSubSel(List<MpvTrack> tracks) {
-        if (ownSubSel != SEL_UNKNOWN) {
-            boolean exists = false;
-            for (MpvTrack t : tracks) if (t.id == ownSubSel) exists = true;
-            if (ownSubSel == SEL_OFF || exists) return ownSubSel;
-            ownSubSel = SEL_UNKNOWN;
-        }
-        for (MpvTrack t : tracks) if (t.selected) return t.id;
-        return SEL_OFF;
-    }
-
-    private void selectSubtitle(MpvTrack t) {
-        ownSubSel = t.id;
-        subtitleOverlay.clear();
+    /** Embedded track: mpv decodes it and the overlay draws mpv's "sub-text". Image tracks are redirected. */
+    private void selectEmbedded(MpvTrack t) {
+        diag("select embedded id=" + t.id + " lang=" + t.lang + " codec=" + t.codec + " image=" + t.isImage());
+        if (t.isImage()) { useOnlineInsteadOfImage(t); return; }
+        sel = SubtitleSelection.embedded(t.id);
+        loggedMpvText = false;
+        subtitleOverlay.setCues(null);                 // MPV mode
         subtitleOverlay.setSubtitlesOn(true);
         try {
             MPVLib.setPropertyBoolean("sub-visibility", true);
             MPVLib.setPropertyString("sid", String.valueOf(t.id));
         } catch (Throwable ignored) {}
-        hint(t.isImage() ? "Image subtitles can't be displayed with this renderer"
-                : "Subtitles: " + t.label());
+        hint("Subtitles: " + t.label());
         updateSubsButton(true);
     }
 
+    /**
+     * PGS/VobSub can't be drawn without mpv's own video renderer. Don't tick something that can't
+     * show: keep the current choice and switch to the best online subtitle in that track's language.
+     */
+    private void useOnlineInsteadOfImage(MpvTrack t) {
+        String lang = (t.lang == null || t.lang.isEmpty()) ? prefs.preferredLang : t.lang;
+        SubtitleItem best = SubtitleRanker.bestFor(onlineRanked, lang);
+        if (best != null) {
+            hint("Image subtitles can't be shown, using online " + LangUtil.display(lang));
+            useOnlineSubtitle(best);
+            autoSubDone = true;
+        } else if (subsLoading) {
+            wantLang = lang;
+            hint("Image subtitles can't be shown. Searching online for " + LangUtil.display(lang) + "…");
+        } else {
+            hint("Image subtitles can't be shown, and no online " + LangUtil.display(lang) + " subtitle was found");
+        }
+    }
+
     private void disableSubtitles() {
-        ownSubSel = SEL_OFF;
+        diag("subtitles off");
+        sel = SubtitleSelection.OFF;
+        wantLang = null;
+        subtitleOverlay.setCues(null);
         subtitleOverlay.setSubtitlesOn(false);
         try {
             MPVLib.setPropertyString("sid", "no");
@@ -767,61 +797,81 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     private void updateSubsButton(boolean on) { subsBtn.setActive(on); }
 
-    /** Clicked an online subtitle: switch to it if already loaded, otherwise download and add it. */
-    private void useOnlineSubtitle(SubtitleItem s) {
-        Integer id = onlineTrackId.get(s.url);
-        if (id != null) {
-            for (MpvTrack t : MpvTrack.read("sub")) {
-                if (t.id == id) {
-                    selectSubtitle(t);
-                    hint("Subtitles: " + LangUtil.display(s.lang));
-                    autoSubDone = true;
-                    rebuildPanel();
-                    return;
-                }
-            }
-            onlineTrackId.remove(s.url);              // track vanished (file reloaded): load it again
-        }
-        addOnlineSubtitle(s);
-    }
-
-    /** Download (charset-fixed) on a worker thread, then hand the local file to mpv. */
-    private void addOnlineSubtitle(final SubtitleItem s) {
+    /**
+     * Online subtitle: downloaded (charset-fixed), parsed into cues, and drawn by the overlay from the
+     * playback time. mpv isn't involved, so it works on any renderer, right after seeks, and with
+     * adjustable delay. The tick moves immediately; if the download fails it moves back.
+     */
+    private void useOnlineSubtitle(final SubtitleItem s) {
+        List<SubtitleCue> cached = cueCache.get(s.url);
+        if (cached != null) { applyOnline(s, cached, null); return; }
         if (!loadingUrls.add(s.url)) return;
+        final SubtitleSelection prev = sel;
+        sel = SubtitleSelection.online(s.url);
+        wantLang = null;
         hint("Loading " + LangUtil.display(s.lang) + " subtitles…");
+        rebuildPanel();
         new Thread(() -> {
             try {
                 final File f = SubtitleLoader.fetch(getApplicationContext(), s.url, s.lang);
+                final String text = readUtf8(f);
+                final List<SubtitleCue> cues = CueParser.parse(text);
                 main.post(() -> {
                     loadingUrls.remove(s.url);
                     if (destroyed) return;
-                    String l = LangUtil.canonical(s.lang);
-                    try {
-                        MPVLib.command(new String[]{"sub-add", f.getAbsolutePath(), "cached",
-                                LangUtil.display(s.lang), l.isEmpty() ? "und" : l});
-                        MPVLib.setPropertyBoolean("sub-visibility", true);
-                    } catch (Throwable ignored) {}
-                    int id = SEL_UNKNOWN;                 // sub-add selected it, so mpv's sid is the new track
-                    try { id = Integer.parseInt(MPVLib.getPropertyString("sid")); } catch (Throwable ignored) {}
-                    if (id <= 0) {                        // sid unreadable: take the newest unclaimed external track
-                        for (MpvTrack t : MpvTrack.read("sub"))
-                            if (t.external && !onlineTrackId.containsValue(t.id) && t.id > id) id = t.id;
-                    }
-                    if (id > 0) { onlineTrackId.put(s.url, id); ownSubSel = id; }
-                    subtitleOverlay.clear();
-                    subtitleOverlay.setSubtitlesOn(true);
-                    autoSubDone = true;
-                    hint("Subtitles: " + LangUtil.display(s.lang));
-                    updateSubsButton(true);
-                    schedulePanelRefresh();
+                    if (!cues.isEmpty()) cueCache.put(s.url, cues);
+                    if (sel.isOnline(s.url)) applyOnline(s, cues, f);   // user may have picked something else meanwhile
+                    else rebuildPanel();
                 });
             } catch (Exception e) {
+                diag("online subtitle failed: " + e);
                 main.post(() -> {
                     loadingUrls.remove(s.url);
+                    if (sel.isOnline(s.url)) sel = prev;                  // un-tick: it never loaded
                     hint("Couldn't load that subtitle");
+                    rebuildPanel();
                 });
             }
         }, "sub-load").start();
+    }
+
+    private void applyOnline(SubtitleItem s, List<SubtitleCue> cues, File file) {
+        sel = SubtitleSelection.online(s.url);
+        autoSubDone = true;
+        subtitleOverlay.setSubtitlesOn(true);
+        if (!cues.isEmpty()) {
+            diag("online subtitle " + LangUtil.display(s.lang) + ": " + cues.size() + " cues, first at "
+                    + cues.get(0).startMs + " ms");
+            subtitleOverlay.setCues(cues);
+            subtitleOverlay.setDelayMs(subDelayMs);
+            try { MPVLib.setPropertyString("sid", "no"); } catch (Throwable ignored) {}   // stop mpv decoding another track
+        } else if (file != null) {
+            // Our parser found nothing (unusual format): fall back to letting mpv decode the file.
+            diag("online subtitle unparseable, falling back to mpv sub-add");
+            subtitleOverlay.setCues(null);
+            loggedMpvText = false;
+            String l = LangUtil.canonical(s.lang);
+            try {
+                MPVLib.command(new String[]{"sub-add", file.getAbsolutePath(), "cached",
+                        LangUtil.display(s.lang), l.isEmpty() ? "und" : l});
+                MPVLib.setPropertyBoolean("sub-visibility", true);
+                int id = Integer.parseInt(MPVLib.getPropertyString("sid"));
+                if (id > 0) fallbackTrackIds.add(id);
+            } catch (Throwable ignored) {}
+        }
+        hint("Subtitles: " + LangUtil.display(s.lang));
+        updateSubsButton(true);
+        schedulePanelRefresh();
+    }
+
+    private static String readUtf8(File f) throws java.io.IOException {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f);
+             java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[16 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            return new String(bo.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+        }
     }
 
     private void changeDelay(int deltaMs) {
@@ -830,25 +880,49 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     }
 
     private void applyDelay() {
-        try { MPVLib.setPropertyDouble("sub-delay", subDelayMs / 1000.0); } catch (Throwable ignored) {}
+        subtitleOverlay.setDelayMs(subDelayMs);                       // online (cue) subtitles
+        try { MPVLib.setPropertyDouble("sub-delay", subDelayMs / 1000.0); } catch (Throwable ignored) {}  // embedded
     }
 
-    /** Pick a subtitle automatically: embedded in preferred language, else best online match. */
+    /** Make the tick reflect what mpv itself auto-selected (default / forced / slang pick). */
+    private void syncSelectionFromMpv(List<MpvTrack> subs) {
+        for (MpvTrack t : subs) {
+            if (!t.selected) continue;
+            if (t.isImage()) {                                        // can't be drawn: don't claim it
+                try { MPVLib.setPropertyString("sid", "no"); } catch (Throwable ignored) {}
+                break;
+            }
+            sel = SubtitleSelection.embedded(t.id);
+            updateSubsButton(true);
+            diag("mpv auto-selected embedded id=" + t.id + " lang=" + t.lang + " codec=" + t.codec);
+            return;
+        }
+        sel = SubtitleSelection.OFF;
+        updateSubsButton(false);
+    }
+
+    /** Pick a subtitle automatically: embedded text track in the preferred language, else best online match. */
     private void autoSelectSubtitle() {
         if (autoSubDone || !fileLoaded) return;
         String pl = prefs.preferredLang;
-        if ("off".equals(pl)) { autoSubDone = true; return; }
         List<MpvTrack> subs = MpvTrack.read("sub");
-        for (MpvTrack t : subs) {
-            // mpv's own slang pick, unless it chose a bitmap track we cannot draw
-            if (t.selected && !t.isImage()) { autoSubDone = true; updateSubsButton(true); return; }
+        if ("off".equals(pl)) {                                       // "Auto-select: Off" means exactly that
+            autoSubDone = true;
+            sel = SubtitleSelection.OFF;
+            subtitleOverlay.setCues(null);
+            subtitleOverlay.setSubtitlesOn(false);
+            try { MPVLib.setPropertyString("sid", "no"); } catch (Throwable ignored) {}
+            updateSubsButton(false);
+            return;
         }
         MpvTrack pick = null;
-        for (MpvTrack t : subs) if (LangUtil.matches(t.lang, pl) && !t.forced && !t.isImage()) { pick = t; break; }
-        if (pick != null) { selectSubtitle(pick); autoSubDone = true; return; }
+        for (MpvTrack t : subs)
+            if (LangUtil.matches(t.lang, pl) && !t.forced && !t.isImage()) { pick = t; break; }
+        if (pick != null) { selectEmbedded(pick); autoSubDone = true; return; }
         SubtitleItem best = SubtitleRanker.bestFor(onlineRanked, pl);
-        if (best != null && !onlineTrackId.containsKey(best.url)) { addOnlineSubtitle(best); autoSubDone = true; return; }
-        if (!subsLoading) autoSubDone = true;     // nothing matched and nothing more is coming
+        if (best != null) { useOnlineSubtitle(best); autoSubDone = true; return; }
+        if (sel.isOff()) syncSelectionFromMpv(subs);                  // show truthfully what mpv picked meanwhile
+        if (!subsLoading) autoSubDone = true;                         // nothing matched and nothing more is coming
     }
 
     private void fetchOnlineSubtitles() {
@@ -866,6 +940,18 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             if (destroyed) return;
             if (--pending[0] <= 0) subsLoading = false;
             onlineRanked = SubtitleRanker.rank(onlineRaw, prefs.preferredLang);
+            if (wantLang != null) {                                   // user picked an image track while we were searching
+                SubtitleItem b = SubtitleRanker.bestFor(onlineRanked, wantLang);
+                if (b != null) {
+                    String l = wantLang; wantLang = null;
+                    hint("Image subtitles can't be shown, using online " + LangUtil.display(l));
+                    useOnlineSubtitle(b);
+                    autoSubDone = true;
+                } else if (pending[0] <= 0) {
+                    hint("No online " + LangUtil.display(wantLang) + " subtitle found");
+                    wantLang = null;
+                }
+            }
             autoSelectSubtitle();
             if (panelKind == P_SUBS && (pending[0] <= 0 || onlineRanked.size() <= 3)) schedulePanelRefresh();
         };
@@ -1003,7 +1089,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     }
     @Override public void eventProperty(String property, long value) {}
     @Override public void eventProperty(String property, double value) {
-        if ("time-pos".equals(property)) mpvTimePos = value;
+        if ("time-pos".equals(property)) { mpvTimePos = value; subtitleOverlay.onTime(value); }
         else if ("duration".equals(property)) mpvDuration = value;
         else return;
         if (!uiUpdateQueued) {              // throttle: mpv can report time-pos many times a second
@@ -1023,7 +1109,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         }
     }
     @Override public void eventProperty(String property, String value) {
-        if ("sub-text".equals(property)) subtitleOverlay.onText(value);
+        if ("sub-text".equals(property)) {
+            if (!loggedMpvText && value != null && !value.trim().isEmpty() && !subtitleOverlay.isCueMode()) {
+                loggedMpvText = true;
+                diag("mpv sub-text is delivering text (embedded path works): " + value.trim().replace('\n', ' '));
+            }
+            subtitleOverlay.onText(value);
+        }
     }
     @Override public void event(int eventId) {
         if (eventId == 8) main.post(this::onFileLoaded);          // MPV_EVENT_FILE_LOADED

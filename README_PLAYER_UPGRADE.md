@@ -6,9 +6,33 @@ actually ships as the APKs). The look and behaviour are modelled on
 
 > **Read this first: it has not been run on a device.** No Android build tools or TV hardware were available
 > while writing it. It was compile-checked against the real Android 34 `android.jar`, its pure logic has
-> 54 passing unit tests, and its icons were rendered and inspected, but nothing has been through
+> 98 passing unit tests, and its icons were rendered and inspected, but nothing has been through
 > `aapt2` or run on a TV box. See [What was and wasn't verified](#what-was-and-wasnt-verified) and
 > [Please check on a device](#please-check-on-a-device).
+
+## v0.9.9: subtitle fixes (from a device log)
+
+Fixes made against the author's `908b2a14-mpv-playback.log` (Amlogic box, `vo=mediacodec_embed`, a 34-subtitle-track MKV).
+What the log showed, and what changed:
+
+| Log evidence | Meaning | Fix |
+|---|---|---|
+| Every seek logged `seeking stream N (sub) to nothing` for all 34 MKV subtitle streams, in all 10 seeks | No embedded track was ever selected. Only the downloaded online file (a separate `lavf` demuxer) was active. | Embedded selection is now explicit (`selectEmbedded`), and mpv's own auto-pick is mirrored into the UI (`syncSelectionFromMpv`). |
+| 34 subtitle tracks in one MKV | Typical of a Blu-ray remux, where most tracks are **PGS bitmaps**. `mediacodec_embed` cannot draw bitmaps, and the overlay only draws text. | Choosing an image track no longer ticks something that can't display. It switches to the best online subtitle in that track's language, or searches for one and applies it when results arrive. |
+| `sub-text ... was unavailable` right after each seek | mpv's `sub-text` property is briefly unavailable after a seek and exists only for the single track mpv has selected. | Online subtitles are now drawn from **cues we parse ourselves** (SRT / WebVTT / ASS, `CueParser`), looked up from `time-pos`. They don't depend on mpv at all, and work immediately after seeking. |
+| (no subtitle diagnostics in the log) | Hard to tell what the app thought it had selected. | `CahayaSub:` lines are logged under the `mpv` tag, so they appear in the same capture. |
+
+**The tick.** It used to be derived from mpv's `sid`, a track-id map and a download that might still be pending. It now comes from one value,
+`SubtitleSelection` (OFF / EMBEDDED id / ONLINE url), set exactly when the user chooses. The tick moves at once on tap, the row shows
+"Loading…" while downloading, and it moves back if the download fails. Auto-select mirrors what mpv itself picked, and "Auto-select: Off"
+now really turns subtitles off.
+
+New classes: `SubtitleCue`, `CueParser` (parse, time lookup, SDH filter), `SubtitleSelection`. `SubtitleOverlay` gained a CUE mode next to its
+MPV mode. Delay applies to both (`sub-delay` for embedded, an offset for cues). Tests: `bootstrap/tests/run_tests.sh` (98 checks).
+
+**Still unverified on device:** embedded *text* tracks (SRT/ASS inside the MKV) still rely on mpv's `sub-text`. Pick one and look for the line
+`CahayaSub: mpv sub-text is delivering text (embedded path works)` in the next log. If it never appears for a text track, send that log.
+Image (PGS) embedded subtitles remain undrawable on this renderer by design.
 
 ## What was wrong before
 
@@ -93,13 +117,11 @@ New classes in `ui/player/`:
 6. **Appearance** (persisted in `SharedPreferences` `cahaya_player`): size 50–200 %, height, 6 colours, bold, outline, background box, hide-SDH, and the renderer toggle. Property names follow NuvioTV's `applySubtitleStyle`: `sub-scale`, `sub-bold`, `sub-outline-size`, `sub-color`, `sub-pos`, `sub-border-style`, `sub-back-color`, `sub-shadow-offset`, `sub-filter-sdh`.
 7. The legacy `sub_url` intent extra is still honoured, as one more online candidate.
 
-### Renderer change (important)
+### Renderer (current state)
 
-Subtitles need mpv's GPU output. v0.8 used `vo=mediacodec_embed`, with a code comment saying it was chosen to
-avoid Mali GPU faults. The new default is therefore **`vo=gpu`** with `hwdec=mediacodec,mediacodec-copy`
-and `gpu-context=android`, the same family of options NuvioTV uses. If a device faults, the **GPU renderer**
-toggle (*Subtitles → Appearance*) switches live to the old direct path, at the cost of no subtitles. It is
-persisted and also reachable from the panel's warning row. Check this on the Mali box first (see below).
+The first version of this change defaulted to `vo=gpu`. On the target Mali B866F box that faults, so upstream reverted to
+`vo=mediacodec_embed` (v0.9.2) and draws subtitles itself in `SubtitleOverlay` (v0.9.3 onward). That is the design now. The GPU-renderer
+toggle was removed; mpv never draws subtitles in this app.
 
 ## Intent contract (unchanged apart from semantics)
 
@@ -110,9 +132,9 @@ For torrents, `video_id` used to be sent as `""`. It is now the real id so onlin
 
 Done:
 
-- **Compile**: all 73 classes compile with `javac --release 17` against the real Android 34 `android.jar`
+- **Compile**: all 81 classes compile with `javac --release 17` against the real Android 34 `android.jar`
   (from `Reginer/aosp-android-jar`). A stub `R.java` generated from `res/` stood in for `aapt2`'s. Exit code 0.
-- **Unit tests**: `bootstrap/tests/run_tests.sh`, 54 checks on `LangUtil`, `ScrubRates`, `TimeFmt`, `SubtitleRanker`
+- **Unit tests**: `bootstrap/tests/run_tests.sh`, 98 checks on `LangUtil`, `ScrubRates`, `TimeFmt`, `SubtitleRanker`, `CueParser`, `SubtitleSelection`
   and `SubtitleDecoder`. This caught one real bug (French showed as "FRA"), now fixed.
 - **Icons**: the 13 path definitions were rendered as SVG in Chromium and checked by eye. The XML parses.
 - **Source review**: control flow was walked through against NuvioTV's mpv code for property names and `sub-add`.
@@ -122,13 +144,14 @@ vector drawables, `d8`, or any run on a TV or emulator. The UI layout, focus beh
 
 ## Please check on a device
 
-1. **`vo=gpu` stability** on the Mali box (the reason `mediacodec_embed` was used). Play any file. If it faults, toggle *GPU renderer* off.
-2. **Subtitles render at all.** Libass needs a font: `sub-font=Roboto` and `sub-fonts-dir=/system/fonts` are set, but this is untested. If text is missing or boxes appear, the font is the first suspect.
-3. **`sub-add … cached` selects the new track.** Behaviour is taken from NuvioTV's usage. If a track is added but not shown, change `"cached"` to `"select"` in `PlayerActivity.addOnlineSubtitle`.
-4. **libmpv version**: property names such as `sub-outline-size` and `sub-filter-sdh` need a reasonably recent libmpv. Each `setProperty*` is individually try/caught, so an unknown one is skipped, not fatal, but the matching control would do nothing.
-5. **`hwdec=mediacodec,mediacodec-copy`** (priority list) needs a libmpv that accepts lists.
-6. **Focus feel**: D-pad order (back ↔ seek ↔ buttons), panel focus lock, and the 4.5 s auto-hide. Also that `FLAG_FULLSCREEN` plus the panel looks right on the target resolution.
-7. **Seeking on torrent streams**: seeking relies on the local HTTP server honouring range requests.
+1. **Embedded text subtitle shows.** Pick an SRT/ASS track under *In this video*. The next log should contain
+   `CahayaSub: mpv sub-text is delivering text (embedded path works)`. If it never appears, send that log.
+2. **Online subtitle shows, follows seeks, and respects Delay.** It is drawn from parsed cues, so it should not blink out after a seek.
+3. **The tick**: moves the instant you tap, shows "Loading…" while downloading, goes back if the download fails, and is on exactly one row (Off, one embedded track, or one online entry).
+4. **Image (PGS) track**: tapping one should keep the old tick and switch to the matching online subtitle (or say none was found).
+5. **Log lines**: `adb logcat -s mpv` and look for `CahayaSub:`. At file load it dumps every subtitle track with its codec and whether it is an image.
+6. **Focus feel**: D-pad order (back ↔ seek ↔ buttons), panel focus lock, and the 4.5 s auto-hide.
+7. **Seeking on torrent streams** relies on the local HTTP server honouring range requests.
 
 ## Not changed
 

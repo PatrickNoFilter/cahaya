@@ -20,6 +20,12 @@ import is.xyz.mpv.MPVLib;
  *  - mpv property-change events (low latency; never blocks the UI thread), and
  *  - a slow background poll as a safety net (mpv only notifies on change).
  * All style settings from {@link SubtitlePrefs} are applied here.
+ *
+ * Two text sources, never mixed:
+ *  - MPV mode (default): embedded tracks; text comes from mpv's "sub-text".
+ *  - CUE mode ({@link #setCues}): online subtitles we parsed ourselves; text is
+ *    looked up from the playback time, so it works the instant a seek lands and
+ *    does not depend on mpv having the file selected at all.
  */
 public class SubtitleOverlay {
     private static final String SAMPLE = "This is how your subtitles will look.\nSecond line.";
@@ -33,6 +39,10 @@ public class SubtitleOverlay {
     private final int screenW, screenH;
 
     private volatile String text = "";
+    /** Non-null = CUE mode. */
+    private volatile java.util.List<SubtitleCue> cues;
+    private volatile int delayMs;
+    private volatile double lastPos = -1;
     private boolean subtitlesOn = true, preview = false, lifted = false;
     private volatile boolean running;
     private HandlerThread pollThread;
@@ -42,10 +52,14 @@ public class SubtitleOverlay {
         @Override public void run() {
             if (!running) return;
             try {
-                String t = MPVLib.getPropertyString("sub-text");
-                onText(t == null ? "" : t);
+                if (cues != null) {
+                    lookup();                                   // paused / delay changed: re-evaluate
+                } else {
+                    String t = MPVLib.getPropertyString("sub-text");
+                    setText(t == null ? "" : t);
+                }
             } catch (Throwable ignored) {}
-            if (pollHandler != null) pollHandler.postDelayed(this, 500);
+            if (pollHandler != null) pollHandler.postDelayed(this, 250);
         }
     };
 
@@ -67,12 +81,46 @@ public class SubtitleOverlay {
 
     // ---- text ------------------------------------------------------------
 
-    /** Safe from any thread. */
+    /** mpv's sub-text value (any thread). Ignored in CUE mode. */
     public void onText(String t) {
+        if (cues != null) return;
+        setText(t);
+    }
+
+    private void setText(String t) {
         final String n = t == null ? "" : t.replace("\r", "").trim();
         if (n.equals(text)) return;
         text = n;
         ui.post(this::refresh);
+    }
+
+    /** Switch to CUE mode with these cues, or back to MPV mode with null. */
+    public void setCues(java.util.List<SubtitleCue> list) {
+        cues = list;
+        text = "";
+        ui.post(this::refresh);
+        if (list != null) lookup();
+    }
+
+    public boolean isCueMode() { return cues != null; }
+
+    /** Subtitle delay in ms (positive = later), same sign as mpv's sub-delay. */
+    public void setDelayMs(int ms) {
+        delayMs = ms;
+        if (cues != null) lookup();
+    }
+
+    /** Playback position in seconds (any thread). Only used in CUE mode. */
+    public void onTime(double seconds) {
+        lastPos = seconds;
+        if (cues != null) lookup();
+    }
+
+    private void lookup() {
+        java.util.List<SubtitleCue> c = cues;
+        if (c == null) return;
+        if (lastPos < 0) { setText(""); return; }
+        setText(CueParser.textAt(c, (long) (lastPos * 1000) - delayMs, prefs.stripSdh));
     }
 
     /** Forget the current line (track switched / subtitles off). */
