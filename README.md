@@ -72,12 +72,37 @@ app/src/main/java/com/patrisius/cahaya/
 
 ## Roadmap
 
-- [x] Phase 0 — protocol verified live, project scaffolded
-- [ ] Phase 1 — addon engine complete + JVM-tested against real addons
-- [ ] Phase 2 — Leanback browse/details UI, Media3 playback with subtitles,
+- [x] Phase 0 — Stremio protocol verified live, project scaffolded
+- [x] Phase 1 — addon engine complete, verified live against real addons
+      (Cinemeta catalog/meta/search, Torrentio, MediaFusion, OpenSubtitles,
+      SubDL, Subsource; redirect-following; string- and object-form
+      `resources[]` entries)
+- [x] Phase 2 — Leanback browse/details UI, playback with subtitles,
       library + watch-state, addon manager screen (install via URL / QR)
-- [ ] Phase 3 — native plugin SDK + sample plugin
+      - Home rows, hero banner with disk cache + background refresh,
+        blurred app background, transparent sidebar, live Cinemeta search
+        with search history
+      - Details + stream picker (addons, plugins, in-app scrapers, torrents)
+      - Playback via libmpv (replaced the Media3 skeleton:
+        `vo=mediacodec_embed` on the Mali-G31 box) with self-drawn online
+        subtitles, audio/speed/aspect panels, Next-episode button, Playing
+        History with live saving
+      - In-app torrent streaming (libtorrent4j, 20 MB preload, localhost
+        HTTP with Range support) and WebView JS scrapers (4khdhub, PlayIMDb)
+      - Addon install via QR + phone web flow; plugin host (HTTP `plugin.json`
+        contract) with an install-by-URL Plugins screen
+- [ ] Phase 3 — native plugin SDK + sample plugin (in progress: the HTTP
+      plugin host and the WebView JS scraper runtime already ship; a formal
+      SDK with a sample plugin is still open)
 - [ ] Phase 4 — phone companion / multiplatform (his call)
+
+Proposed, only on his word:
+
+- Player error screen with Retry instead of a silent exit on mpv END_FILE
+- Torrent rolling-deadline window (beyond first-8 + last-2 pieces)
+- `behaviorHints` parsing from addon streams
+- Hosting for the AIO-Cahaya adapter somewhere the box can reach
+  (currently moot — the in-app scrapers cover its providers)
 
 ## Building
 
