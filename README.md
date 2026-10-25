@@ -7,6 +7,34 @@ Nuvio and CloudStream — with support for community addons and plugins.
 > Old Javanese *cahya*) — name decided 2026-10-21 after a collision check
 > (StreamBox taken, Evestream too close to EVStream).
 
+## Releases
+
+Current version: **1.1.1** (build 61). Release APKs are published on the
+[Releases page](https://github.com/PatrickNoFilter/cahaya/releases) — one
+release per version, each carrying its own APK.
+
+Install: sideload the APK on an Android TV box (armeabi-v7a, Android 11+).
+The APK is ~93 MB because it bundles the libmpv player and the in-app
+torrent engine. No Play Store release yet.
+
+### Changelog
+
+- **1.1.1** — Search tab: "Recent searches" chip row (last 10 queries, most
+  recent first) + live search as you type (500 ms debounce; live searches
+  don't flood history or steal input focus).
+- **1.1.0** — Player: Next-episode button right of Play (series only; pick
+  a stream for the next episode, plays in place). Playing History: finished
+  titles kept with a "Selesai" badge (replay restarts from 0); progress
+  saved live every 30 s and on pause, not only on exit.
+- **1.0.3** — Player controller buttons act on key-DOWN, so subtitle /
+  audio / speed panels open on one press.
+- **1.0.2** — Pause fix: atomic mpv `cycle pause`, OK / Space / P toggle,
+  play button focused when the controller shows.
+- **1.0.1** — Folded sidebar rail narrowed 76 → 56 dp, body padding
+  28 → 16 dp while folded.
+- **1.0.0** — Unfocused sidebar rows (selected or not) are transparent with
+  a grey label, like the other tabs; only the focused row is highlighted.
+
 ## The idea
 
 Cahaya hosts **no content**. It is a client shell that talks to addons:
