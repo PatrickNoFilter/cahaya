@@ -1,6 +1,7 @@
 package com.patrisius.cahaya.ui;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -30,9 +31,14 @@ import is.xyz.mpv.MPVLib;
 import com.patrisius.cahaya.CahayaApp;
 import com.patrisius.cahaya.R;
 import com.patrisius.cahaya.addon.AddonManager;
+import com.patrisius.cahaya.addon.MetaDetails;
+import com.patrisius.cahaya.addon.StreamItem;
 import com.patrisius.cahaya.addon.SubtitleItem;
+import com.patrisius.cahaya.jsrunner.JsScraperRunner;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
+import com.patrisius.cahaya.scraper.FibWatchScraper;
+import com.patrisius.cahaya.scraper.Scraper;
 import com.patrisius.cahaya.torrent.TorrentStreamer;
 import com.patrisius.cahaya.ui.player.CueParser;
 import com.patrisius.cahaya.ui.player.LangUtil;
@@ -57,6 +63,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * v0.9 player: libmpv on a SurfaceView with a modern TV control layer.
@@ -91,7 +98,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private ProgressBar spinner;
     private TextView hintView;
     private FrameLayout controller;
-    private PlayerButton backBtn, playBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn;
+    private PlayerButton backBtn, playBtn, nextBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn;
+    private String poster;
+    /** v1.1.0 live-save throttle: last wall time / position written to history. */
+    private long lastLiveSaveMs = 0;
+    private double lastLiveSavePos = -1;
     private SeekTrack seek;
     private TextView timeCur, timeDur, titleView;
     private SidePanel panel;
@@ -138,9 +149,32 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         @Override public void run() {
             if (!paused && mpvTimePos < 0) { manualPos += 1.0; subtitleOverlay.onTime(manualPos); }   // fallback if mpv never reports time-pos
             updateProgress();
+            // v1.1.0 live history: save while watching (throttled to
+            // 30s / 5s of movement), not only on exit — so a crash
+            // keeps the minutes already watched.
+            if (fileLoaded && !destroyed) {
+                double pos = mpvTimePos > 0 ? mpvTimePos : manualPos;
+                long now = System.currentTimeMillis();
+                if (pos >= 30 && now - lastLiveSaveMs >= 30000
+                        && Math.abs(pos - lastLiveSavePos) >= 5) {
+                    saveCurrentProgress();
+                }
+            }
             main.postDelayed(this, 1000);
         }
     };
+
+    /** Write the current position to Playing History right now. */
+    private void saveCurrentProgress() {
+        try {
+            double pos = mpvTimePos > 0 ? mpvTimePos : manualPos;
+            double dur = mpvDuration > 0 ? mpvDuration : 0;
+            if (videoId == null || pos < 30) return;
+            ContinueWatching.save(this, videoId, title, type, poster, pos, dur);
+            lastLiveSaveMs = System.currentTimeMillis();
+            lastLiveSavePos = pos;
+        } catch (Throwable ignored) {}
+    }
     private final Runnable refreshPanel = this::rebuildPanel;
 
     // =====================================================================
@@ -167,6 +201,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         if (title == null) title = "Video";
         type = getIntent().getStringExtra("type");
         videoId = getIntent().getStringExtra("video_id");
+        poster = getIntent().getStringExtra("poster");
         startPos = getIntent().getDoubleExtra("start_pos", 0);
         prefs = new SubtitlePrefs(this);
 
@@ -217,7 +252,6 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         try {
             double pos = mpvTimePos > 0 ? mpvTimePos : manualPos;
             double dur = mpvDuration > 0 ? mpvDuration : 0;
-            String poster = getIntent().getStringExtra("poster");
             if (videoId != null && pos > 0) {
                 ContinueWatching.save(this, videoId, title, type, poster, pos, dur);
             }
@@ -332,6 +366,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         playBtn = new PlayerButton(this, 64, 38, R.drawable.ic_player_pause, "Play or pause");
+        nextBtn = new PlayerButton(this, 56, 32, R.drawable.ic_player_next, "Next episode");
         rewBtn = new PlayerButton(this, 56, 32, R.drawable.ic_player_replay10, "Back 10 seconds");
         fwdBtn = new PlayerButton(this, 56, 32, R.drawable.ic_player_forward10, "Forward 10 seconds");
         subsBtn = new PlayerButton(this, 56, 30, R.drawable.ic_player_subtitles, "Subtitles");
@@ -339,7 +374,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         speedBtn = new PlayerButton(this, 56, 30, R.drawable.ic_player_speed, "Playback speed");
         aspectBtn = new PlayerButton(this, 56, 30, R.drawable.ic_player_aspect, "Aspect ratio");
         playBtn.setId(View.generateViewId());
+        nextBtn.setId(View.generateViewId());
         addGap(row, playBtn, 0);
+        addGap(row, nextBtn, 8);
         addGap(row, rewBtn, 8);
         addGap(row, fwdBtn, 8);
         row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
@@ -351,6 +388,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         controller.addView(bottom, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
 
         playBtn.setOnClickListener(v -> { togglePlay(); });
+        nextBtn.setOnClickListener(v -> { openNextEpisodePicker(); });
         rewBtn.setOnClickListener(v -> { seekRel(-10); scheduleHide(); });
         fwdBtn.setOnClickListener(v -> { seekRel(10); scheduleHide(); });
         subsBtn.setOnClickListener(v -> openPanel(P_SUBS, v));
@@ -362,8 +400,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         seek.setNextFocusUpId(backBtn.getId());
         seek.setNextFocusDownId(playBtn.getId());
         backBtn.setNextFocusDownId(seek.getId());
-        for (View b : new View[]{playBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn})
+        for (View b : new View[]{playBtn, nextBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn})
             b.setNextFocusUpId(seek.getId());
+        // v1.1.0: Next only makes sense for series — hide it for movies.
+        if (!"series".equals(type)) nextBtn.setVisibility(View.GONE);
 
         root.addView(controller, new FrameLayout.LayoutParams(-1, -1));
 
@@ -512,11 +552,317 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // =====================================================================
 
     private void togglePlay() {
+        // v1.0.2: atomic "cycle pause" instead of read-then-write.
+        // The old read could go stale (or throw, silently swallowed)
+        // and then no write ever happened — video kept playing.
+        // "cycle pause" is mpv's own toggle: one call, no read needed.
         try {
-            boolean p = MPVLib.getPropertyBoolean("pause");
-            MPVLib.setPropertyBoolean("pause", !p);
-        } catch (Throwable ignored) {}
+            MPVLib.command(new String[]{"cycle", "pause"});
+        } catch (Throwable t) {
+            try {
+                boolean p = MPVLib.getPropertyBoolean("pause");
+                MPVLib.setPropertyBoolean("pause", !p);
+            } catch (Throwable ignored) {}
+        }
         showController();
+    }
+
+    /** True when v is inside parent (walking up the view tree). */
+    private static boolean isIn(View v, ViewGroup parent) {
+        android.view.ViewParent p = v.getParent();
+        while (p != null) {
+            if (p == parent) return true;
+            p = p.getParent();
+        }
+        return false;
+    }
+
+    // =====================================================================
+    // Next episode (v1.1.0)
+    // =====================================================================
+
+    /** Next button: find the episode after this one in Cinemeta's
+     *  video list, gather its streams from every source (same set as
+     *  Details), and let the user pick one — nothing auto-plays. */
+    private void openNextEpisodePicker() {
+        if (!"series".equals(type) || videoId == null) { hint("No next episode"); return; }
+        String[] parts = videoId.split(":");
+        if (parts.length < 3) { hint("No next episode for this title"); return; }
+        final String seriesId = parts[0];
+        final int curSeason, curEpisode;
+        try {
+            curSeason = Integer.parseInt(parts[1]);
+            curEpisode = Integer.parseInt(parts[2]);
+        } catch (Exception e) { hint("No next episode for this title"); return; }
+
+        final AlertDialog progress = new AlertDialog.Builder(this)
+                .setMessage("Finding next episode…")
+                .setCancelable(false)
+                .create();
+        progress.show();
+
+        final AddonManager mgr = ((CahayaApp) getApplication()).addons();
+        mgr.meta(AddonManager.DEFAULT_ADDON, "series", seriesId,
+                new AddonManager.Callback<MetaDetails>() {
+                    @Override public void onResult(MetaDetails meta) {
+                        if (destroyed) return;
+                        int idx = -1;
+                        for (int i = 0; i < meta.videos.size(); i++) {
+                            MetaDetails.VideoInfo vi = meta.videos.get(i);
+                            if (vi.id.equals(videoId)
+                                    || (vi.season == curSeason && vi.episode == curEpisode)) {
+                                idx = i;
+                                break;
+                            }
+                        }
+                        if (idx < 0 || idx + 1 >= meta.videos.size()) {
+                            main.post(() -> {
+                                progress.dismiss();
+                                hint("This is the last episode");
+                            });
+                            return;
+                        }
+                        collectNextStreams(meta, meta.videos.get(idx + 1), progress);
+                    }
+
+                    @Override public void onError(Exception e) {
+                        main.post(() -> {
+                            progress.dismiss();
+                            Toast.makeText(PlayerActivity.this,
+                                    "Couldn't load series info", Toast.LENGTH_SHORT).show();
+                        });
+                    }
+                });
+    }
+
+    /** Same stream sources as Details.playVideo, for the next episode. */
+    private void collectNextStreams(final MetaDetails meta, final MetaDetails.VideoInfo nv,
+                                    final AlertDialog progress) {
+        final String nextTitle = meta.name + " — " + nv.title;
+        final String nextVideoId = nv.id;
+        final String nextPoster = nv.thumbnail != null && !nv.thumbnail.isEmpty()
+                ? nv.thumbnail : poster;
+        int year = 0;
+        if (meta.releaseInfo != null) {
+            java.util.regex.Matcher ym = java.util.regex.Pattern
+                    .compile("\\b(19|20)\\d{2}\\b").matcher(meta.releaseInfo);
+            if (ym.find()) {
+                try { year = Integer.parseInt(ym.group()); } catch (Exception ignored) {}
+            }
+        }
+        final int scraperYear = year;
+        final AddonManager mgr = ((CahayaApp) getApplication()).addons();
+        final PluginManager plugins = new PluginManager(this, mgr);
+        final List<StreamItem> all = new ArrayList<>();
+        final List<String> addonUrls = new ArrayList<>(mgr.addonUrls());
+        final List<Plugin> enabled = new ArrayList<>();
+        for (Plugin p : plugins.plugins()) if (p.enabled) enabled.add(p);
+        final AtomicInteger pending =
+                new AtomicInteger(addonUrls.size() + enabled.size() + 3);
+        final Runnable done = () -> {
+            if (pending.decrementAndGet() > 0) return;
+            if (destroyed) return;
+            progress.dismiss();
+            if (all.isEmpty()) {
+                Toast.makeText(this, "No streams found for next episode",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            java.util.Collections.sort(all, (a, b) ->
+                    Integer.compare(b.seeders, a.seeders));
+            showNextPicker(nextTitle, nextVideoId, nextPoster, all);
+        };
+        AddonManager.Callback<List<StreamItem>> collect =
+                new AddonManager.Callback<List<StreamItem>>() {
+                    @Override public void onResult(List<StreamItem> items) {
+                        synchronized (all) { all.addAll(items); }
+                        main.post(done);
+                    }
+
+                    @Override public void onError(Exception e) { main.post(done); }
+                };
+        for (String base : addonUrls) {
+            mgr.streams(base, "series", nextVideoId, collect);
+        }
+        for (Plugin p : enabled) {
+            plugins.pluginStreams(p.baseUrl, "series", nextVideoId,
+                    new PluginManager.Callback<List<StreamItem>>() {
+                        @Override public void onResult(List<StreamItem> items) {
+                            collect.onResult(items);
+                        }
+
+                        @Override public void onError(Exception e) {
+                            collect.onError(e);
+                        }
+                    });
+        }
+        new FibWatchScraper().getStreams(meta.name, scraperYear, "series",
+                nv.season, nv.episode,
+                new Scraper.Callback() {
+                    @Override public void onResult(List<StreamItem> items) {
+                        collect.onResult(items);
+                    }
+
+                    @Override public void onError(Exception e) {
+                        collect.onError(e);
+                    }
+                });
+        for (String pid : new String[]{JsScraperRunner.PROVIDER_4KHDHUB,
+                JsScraperRunner.PROVIDER_PLAYIMDB}) {
+            final String providerId = pid;
+            new JsScraperRunner(this, providerId).run(meta.moviedbId, "series",
+                    nv.season, nv.episode,
+                    new JsScraperRunner.Callback() {
+                        @Override public void onResult(List<StreamItem> items) {
+                            collect.onResult(items);
+                        }
+
+                        @Override public void onError(String message) {
+                            collect.onError(new Exception(message));
+                        }
+                    });
+        }
+    }
+
+    private void showNextPicker(final String nextTitle, final String nextVideoId,
+                                final String nextPoster, final List<StreamItem> streams) {
+        String[] labels = new String[streams.size()];
+        for (int i = 0; i < streams.size(); i++) {
+            StreamItem s = streams.get(i);
+            String sub = hostOf(s.source);
+            if (s.isTorrent()) {
+                StringBuilder sb = new StringBuilder();
+                if (s.seeders >= 0) sb.append("👤 ").append(s.seeders).append(" seeders");
+                if (s.size != null) {
+                    if (sb.length() > 0) sb.append(" · ");
+                    sb.append(s.size);
+                }
+                if (sb.length() > 0) sb.append(" · ");
+                sb.append(sub);
+                sub = sb.toString();
+            }
+            labels[i] = s.title + "\n" + sub;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(nextTitle)
+                .setItems(labels, (d, which) -> {
+                    StreamItem s = streams.get(which);
+                    if (s.isTorrent()) {
+                        playNextTorrent(nextTitle, nextVideoId, nextPoster, s);
+                        return;
+                    }
+                    switchToStream(s.url, s.headers, nextTitle, nextVideoId, nextPoster);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void playNextTorrent(final String nextTitle, final String nextVideoId,
+                                 final String nextPoster, final StreamItem s) {
+        android.widget.TextView msg = new android.widget.TextView(this);
+        msg.setPadding(48, 32, 48, 32);
+        msg.setTextSize(18);
+        msg.setText("Starting…");
+        final AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("Torrent")
+                .setView(msg)
+                .setNegativeButton("Cancel", (d, w) -> TorrentStreamer.stopActive())
+                .setCancelable(false)
+                .create();
+        dlg.show();
+        new TorrentStreamer().start(this, s.url, s.fileIdx,
+                new TorrentStreamer.Callback() {
+                    @Override public void onProgress(String stage, int percent, String detail) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) {
+                                msg.setText(stage + "\n" + percent + "%"
+                                        + (detail.isEmpty() ? "" : "\n" + detail));
+                            }
+                        });
+                    }
+
+                    @Override public void onReady(String httpUrl, String fileName) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) dlg.dismiss();
+                            switchToStream(httpUrl, null, nextTitle, nextVideoId, nextPoster);
+                        });
+                    }
+
+                    @Override public void onError(String errMsg) {
+                        main.post(() -> {
+                            if (dlg.isShowing()) dlg.dismiss();
+                            Toast.makeText(PlayerActivity.this, errMsg,
+                                    Toast.LENGTH_LONG).show();
+                        });
+                    }
+                });
+    }
+
+    /** Play the picked next-episode stream in THIS player (no new
+     *  activity, so no torrent/activity-lifecycle race). The old
+     *  episode's progress is saved first. */
+    private void switchToStream(String url,
+                                java.util.Map<String, String> headers,
+                                String nTitle, String nVideoId, String nPoster) {
+        saveCurrentProgress();
+        title = nTitle;
+        titleView.setText(nTitle);
+        videoId = nVideoId;
+        poster = nPoster;
+        streamUrl = url;
+        if (headers != null && !headers.isEmpty()) {
+            StringBuilder hb = new StringBuilder();
+            for (java.util.Map.Entry<String, String> e : headers.entrySet()) {
+                if (hb.length() > 0) hb.append("\n");
+                hb.append(e.getKey()).append(": ").append(e.getValue());
+            }
+            streamHeaders = hb.toString();
+            try {
+                MPVLib.setOptionString("http-header-fields",
+                        streamHeaders.replace("\n", ","));
+            } catch (Throwable ignored) {}
+        } else {
+            streamHeaders = null;
+            try { MPVLib.setOptionString("http-header-fields", ""); } catch (Throwable ignored) {}
+        }
+        startPos = 0;
+        fileLoaded = false;
+        autoSubDone = false;
+        sel = SubtitleSelection.OFF;
+        wantLang = null;
+        selectedAudioId = -2;
+        try {
+            subtitleOverlay.setCues(null);
+            subtitleOverlay.setSubtitlesOn(false);
+        } catch (Throwable ignored) {}
+        onlineRaw.clear();
+        onlineRanked.clear();
+        subsLoading = false;
+        mpvTimePos = -1;
+        mpvDuration = -1;
+        manualPos = 0;
+        lastLiveSaveMs = 0;
+        lastLiveSavePos = -1;
+        try {
+            MPVLib.command(new String[]{"loadfile", url});
+        } catch (Throwable t) {
+            Toast.makeText(this, "Couldn't play next episode",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        try { MPVLib.setPropertyBoolean("pause", false); } catch (Throwable ignored) {}
+        fetchOnlineSubtitles();
+        showController();
+        hint("Next: " + nTitle);
+        updateProgress();
+    }
+
+    private static String hostOf(String url) {
+        try {
+            return new java.net.URL(url).getHost();
+        } catch (Exception e) {
+            return url;
+        }
     }
 
     private void seekRel(int seconds) {
@@ -570,7 +916,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         } else {
             controller.animate().cancel();
             controller.setAlpha(1f);
-            if (getCurrentFocus() == null) playBtn.requestFocus();
+            // v1.0.2: focus play when focus is outside the controller
+            // (e.g. cleared when it hid), so OK on a visible controller
+            // always lands on pause — never on a dead-end view.
+            View f = getCurrentFocus();
+            if (f == null || !isIn(f, controller)) playBtn.requestFocus();
         }
         subtitleOverlay.setLifted(true);
         scheduleHide();
@@ -601,6 +951,36 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // Keys
     // =====================================================================
 
+    /** v1.0.3: panel buttons (subtitles/audio/speed/…) used to need
+     *  two presses to open: the OK press was routed through the
+     *  button's key-up click, which could be swallowed when focus
+     *  or the controller's hide animation shifted under it. Now the
+     *  OK key-DOWN on a focused controller button acts immediately
+     *  and consumes the event, so the later key-up click never
+     *  double-fires. Touch clicks still go through the listeners.
+     *  Panel rows are untouched: the panel is open only while the
+     *  controller is hidden, so this branch never runs for them. */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN
+                && (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER
+                    || event.getKeyCode() == KeyEvent.KEYCODE_ENTER)
+                && controller != null && controller.getVisibility() == View.VISIBLE
+                && panel != null && !panel.isOpen()) {
+            View f = getCurrentFocus();
+            if (f == playBtn) { togglePlay(); return true; }
+            if (f == nextBtn) { openNextEpisodePicker(); return true; }
+            if (f == rewBtn) { seekRel(-10); scheduleHide(); return true; }
+            if (f == fwdBtn) { seekRel(10); scheduleHide(); return true; }
+            if (f == subsBtn) { openPanel(P_SUBS, subsBtn); return true; }
+            if (f == audioBtn) { openPanel(P_AUDIO, audioBtn); return true; }
+            if (f == speedBtn) { openPanel(P_SPEED, speedBtn); return true; }
+            if (f == aspectBtn) { cycleAspect(); return true; }
+            if (f == backBtn) { finish(); return true; }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         switch (keyCode) {
@@ -617,6 +997,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 }
                 break;
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_SPACE:
+            case KeyEvent.KEYCODE_P:
+                // v1.0.2: remotes/keyboards that send Space/P for
+                // play/pause now pause too — previously swallowed.
                 togglePlay();
                 return true;
             case KeyEvent.KEYCODE_MEDIA_PLAY:
@@ -649,6 +1033,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
                 if (!controllerVisible) { togglePlay(); return true; }
+                // v1.0.2: visible controller, but focus on the seek
+                // bar (or nowhere) — OK used to do nothing there,
+                // because seek has no click action. Pause instead.
+                // Focus on playBtn (or any other button) is left to
+                // its own click, so there is no double toggle.
+                View f = getCurrentFocus();
+                if (f == null || f == seek) { togglePlay(); return true; }
                 break;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_DPAD_RIGHT:
@@ -1194,7 +1585,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             main.post(() -> {
                 paused = value;
                 playBtn.setIcon(value ? R.drawable.ic_player_play : R.drawable.ic_player_pause);
-                if (value) { if (!panel.isOpen()) showController(); } else scheduleHide();
+                if (value) { saveCurrentProgress(); if (!panel.isOpen()) showController(); } else scheduleHide();
             });
         } else if ("paused-for-cache".equals(property)) {
             main.post(() -> { buffering = value; updateProgress(); });

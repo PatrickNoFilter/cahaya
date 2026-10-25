@@ -31,8 +31,14 @@ public class ContinueWatching {
             return duration > 0 ? position / duration : 0;
         }
 
+        /** Finished when playback reached (or passed) the last 30s. */
+        public boolean isFinished() {
+            return duration > 0 && position >= duration - 30;
+        }
+
         public String remainingText() {
             if (duration <= 0) return "";
+            if (isFinished()) return "Selesai";
             long remaining = (long) (duration - position);
             if (remaining < 60) return "Sisa " + remaining + " dtk";
             long mins = remaining / 60;
@@ -45,14 +51,12 @@ public class ContinueWatching {
     public static void save(Context ctx, String videoId, String title, String type,
                            String poster, double position, double duration) {
         if (videoId == null || videoId.isEmpty()) return;
-        // Don't save if at the very start or very end
-        if (position < 30 || (duration > 0 && position > duration - 30)) {
-            // If at end, remove from list
-            if (duration > 0 && position > duration - 30) {
-                remove(ctx, videoId);
-            }
-            return;
-        }
+        // Don't save if at the very start.
+        if (position < 30) return;
+        // v1.1.0: finished titles are KEPT, not dropped — a finished
+        // watch stays in Playing History (badge "Selesai") so the
+        // user can replay it. Cap the position at the duration.
+        if (duration > 0 && position > duration) position = duration;
 
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         List<Item> items = load(ctx);

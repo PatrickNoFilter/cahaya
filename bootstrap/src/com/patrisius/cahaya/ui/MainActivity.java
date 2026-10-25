@@ -41,6 +41,7 @@ import com.patrisius.cahaya.scraper.FibWatchScraper;
 import com.patrisius.cahaya.scraper.Scraper;
 import com.patrisius.cahaya.torrent.TorrentStreamer;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
@@ -145,7 +146,7 @@ public class MainActivity extends Activity {
 
         sidebar = new LinearLayout(this);
         sidebar.setOrientation(LinearLayout.VERTICAL);
-        sidebar.setBackgroundColor(Color.TRANSPARENT); // v0.10.30: blurred photo shows through the side panel too
+        sidebar.setBackgroundColor(Color.TRANSPARENT); // v0.10.28: blurred photo shows through the side panel too
         int sideW = dp(280);
         root.addView(sidebar, new LinearLayout.LayoutParams(
                 sideW, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -232,7 +233,7 @@ public class MainActivity extends Activity {
         contentCol.addView(content, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // Blurred-background layer under everything (v0.10.30):
+        // Blurred-background layer under everything (v0.10.27):
         // a plain ImageView first in a FrameLayout, root on top of it.
         FrameLayout frame = new FrameLayout(this);
         appBgView = new ImageView(this);
@@ -281,14 +282,17 @@ public class MainActivity extends Activity {
         LinearLayout row = menuRows.get(idx);
         TextView label = menuLabels.get(idx);
         boolean isSel = idx == selected;
-        if (isSel) {
-            row.setBackgroundColor(focused
-                    ? Color.parseColor("#35617A") : Color.parseColor("#2A4A5A"));
+        // v1.0.0: the selected tab shows NO highlight while focus is
+        // in the body — transparent background and grey label, just
+        // like every other tab. Only the actually focused row gets a
+        // background (selected: #35617A, other: #26292F) and white text.
+        if (focused) {
+            row.setBackgroundColor(Color.parseColor(
+                    isSel ? "#35617A" : "#26292F"));
             label.setTextColor(Color.WHITE);
         } else {
-            row.setBackgroundColor(focused
-                    ? Color.parseColor("#26292F") : Color.TRANSPARENT);
-            label.setTextColor(focused ? Color.WHITE : Color.parseColor("#9AA0A6"));
+            row.setBackgroundColor(Color.TRANSPARENT);
+            label.setTextColor(Color.parseColor("#9AA0A6"));
         }
         row.setScaleX(focused ? 1.04f : 1.0f);
         row.setScaleY(focused ? 1.04f : 1.0f);
@@ -310,7 +314,13 @@ public class MainActivity extends Activity {
         }
         sidebarExpanded = expanded;
         int from = sidebar.getWidth();
-        int to = dp(expanded ? 280 : 76);
+        // v1.0.1: folded rail 76 -> 56dp (icons are 40dp, still fit
+        // with margin) and body left padding 28 -> 16dp while folded,
+        // so the body sits closer to the rail and looks balanced.
+        int to = dp(expanded ? 280 : 56);
+        if (content != null) {
+            content.setPadding(dp(expanded ? 28 : 16), dp(8), dp(28), dp(28));
+        }
         ValueAnimator anim = ValueAnimator.ofInt(from, to);
         anim.setDuration(220);
         anim.addUpdateListener(a -> {
@@ -337,11 +347,11 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** v0.10.30/30: pressing Left from the content pane must land on
+    /** v0.10.29/0.10.30: pressing Left from the content pane must land on
      *  the menu row of the tab currently displayed, not on whatever
      *  sidebar row Android's focus search finds nearest — from a low
      *  row (e.g. Popular Movies) that was Settings at the bottom.
-     *  v0.10.30 grabbed EVERY Left press, which broke stepping back
+     *  v0.10.29 grabbed EVERY Left press, which broke stepping back
      *  left through the cards in a row. v0.10.30 only overrides when
      *  focus search finds no content view to the left (or a sidebar
      *  view): a card with a neighbour to its left keeps normal
@@ -636,7 +646,7 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    /** Playing History click (v0.10.30 pick-then-resume, v0.10.30
+    /** Playing History click (v0.10.22 pick-then-resume, v0.10.23
      *  all sources): collects streams from every addon/plugin AND
      *  the in-app scrapers (FibWatch + WebView JS 4khdhub/playimdb),
      *  exactly like Details, sorts most-seeders-first, and shows a
@@ -861,8 +871,12 @@ public class MainActivity extends Activity {
                         }
                         i.putExtra("headers", hb.toString());
                     }
-                    if (it.position > 0) {
-                        i.putExtra("start_pos", it.position);
+                    // v1.1.0: a finished item restarts from 0, not
+                    // from its end position (which would end instantly).
+                    double resumePos = (it.duration > 0 && it.position >= it.duration - 30)
+                            ? 0 : it.position;
+                    if (resumePos > 0) {
+                        i.putExtra("start_pos", resumePos);
                     }
                     startActivity(i);
                 })
@@ -906,8 +920,10 @@ public class MainActivity extends Activity {
                             i.putExtra("type", it.type);
                             i.putExtra("video_id", it.videoId);
                             if (it.poster != null) i.putExtra("poster", it.poster);
-                            if (it.position > 0) {
-                                i.putExtra("start_pos", it.position);
+                            double resumePos = (it.duration > 0 && it.position >= it.duration - 30)
+                                    ? 0 : it.position;
+                            if (resumePos > 0) {
+                                i.putExtra("start_pos", resumePos);
                             }
                             startActivity(i);
                         });
@@ -1605,6 +1621,33 @@ public class MainActivity extends Activity {
 
     // ---------------- Search ----------------
 
+    /** Search history (v1.1.1): last 10 queries, most recent first,
+     *  in SharedPreferences as a JSON array. */
+    private java.util.List<String> loadSearchHistory() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        try {
+            String json = getSharedPreferences("search_history", MODE_PRIVATE)
+                    .getString("queries", "[]");
+            JSONArray arr = new JSONArray(json);
+            for (int i = 0; i < arr.length(); i++) out.add(arr.optString(i));
+        } catch (Exception ignored) {}
+        return out;
+    }
+
+    private void saveSearchQuery(String q) {
+        if (q == null || q.isEmpty()) return;
+        java.util.List<String> h = loadSearchHistory();
+        h.remove(q);
+        h.add(0, q);
+        while (h.size() > 10) h.remove(h.size() - 1);
+        try {
+            JSONArray arr = new JSONArray();
+            for (String x : h) arr.put(x);
+            getSharedPreferences("search_history", MODE_PRIVATE)
+                    .edit().putString("queries", arr.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
     private View makeSearchScreen() {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -1620,7 +1663,7 @@ public class MainActivity extends Activity {
         bar.setOrientation(LinearLayout.HORIZONTAL);
 
         final EditText input = new EditText(this);
-        input.setHint("Search loaded titles…");
+        input.setHint("Search movies and series…");
         input.setHintTextColor(Color.GRAY);
         input.setTextColor(Color.WHITE);
         input.setSingleLine(true);
@@ -1639,10 +1682,31 @@ public class MainActivity extends Activity {
         col.addView(bar);
 
         TextView note = new TextView(this);
-        note.setText("Searches Cinemeta movies + series live. Loaded Home titles are included too.");
+        note.setText("Type to search Cinemeta movies + series live. Loaded Home titles are included too.");
         note.setTextColor(Color.GRAY);
         note.setPadding(0, dp(8), 0, dp(8));
         col.addView(note);
+
+        // v1.1.1: recent-searches row (label + horizontal chip row).
+        // Populated by rebuildHistory below, once doSearch exists.
+        final LinearLayout historyBox = new LinearLayout(this);
+        historyBox.setOrientation(LinearLayout.VERTICAL);
+        historyBox.setPadding(0, dp(4), 0, dp(8));
+        TextView histLabel = new TextView(this);
+        histLabel.setText("Recent searches");
+        histLabel.setTextColor(Color.GRAY);
+        histLabel.setTextSize(13);
+        histLabel.setPadding(0, 0, 0, dp(6));
+        historyBox.addView(histLabel);
+        final LinearLayout historyRow = new LinearLayout(this);
+        historyRow.setOrientation(LinearLayout.HORIZONTAL);
+        android.widget.HorizontalScrollView histScroll =
+                new android.widget.HorizontalScrollView(this);
+        histScroll.setHorizontalScrollBarEnabled(false);
+        histScroll.addView(historyRow);
+        historyBox.addView(histScroll);
+        historyBox.setVisibility(View.GONE);
+        col.addView(historyBox);
 
         final LinearLayout results = new LinearLayout(this);
         results.setOrientation(LinearLayout.VERTICAL);
@@ -1651,12 +1715,26 @@ public class MainActivity extends Activity {
         col.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        Runnable doSearch = () -> {
+        // v1.1.1: live search + history. doSearch(true) = explicit
+        // search (Go / Enter / history chip): saves the query to
+        // history and moves focus to the first result. doSearch(false)
+        // = live typing: searches but neither saves (typing "b-r-e-a"
+        // must not flood history with fragments) nor steals focus
+        // from the input. searchSeq drops stale replies so an older
+        // query's late response can't overwrite a newer one.
+        final int[] searchSeq = {0};
+        final Runnable[] rebuildHistoryRef = new Runnable[1];
+        final java.util.function.Consumer<Boolean> doSearch = (save) -> {
             String raw = input.getText().toString().trim();
             final String q = raw.toLowerCase();
+            final int mySeq = ++searchSeq[0];
             results.removeAllViews();
             if (q.isEmpty()) {
                 return;
+            }
+            if (save) {
+                saveSearchQuery(raw);
+                if (rebuildHistoryRef[0] != null) rebuildHistoryRef[0].run();
             }
             TextView searching = new TextView(this);
             searching.setText("Searching Cinemeta for \"" + raw + "\"…");
@@ -1697,6 +1775,7 @@ public class MainActivity extends Activity {
                     if (done[0] < 2) {
                         return;
                     }
+                    if (mySeq != searchSeq[0]) return; // superseded by a newer keystroke
                     results.removeAllViews();
                     // Live results first, then loaded-Home matches not
                     // already present, deduped by catalog id.
@@ -1722,9 +1801,11 @@ public class MainActivity extends Activity {
                         results.addView(empty);
                     } else {
                         results.addView(makeRow(hits.size() + " result(s)", hits));
-                        View f = firstFocusable(results);
-                        if (f != null) {
-                            f.requestFocus();
+                        if (save) {
+                            View f = firstFocusable(results);
+                            if (f != null) {
+                                f.requestFocus();
+                            }
                         }
                     }
                 }
@@ -1732,14 +1813,61 @@ public class MainActivity extends Activity {
             mgr.catalogExtra(AddonManager.DEFAULT_ADDON, "movie", "top", extra, cb);
             mgr.catalogExtra(AddonManager.DEFAULT_ADDON, "series", "top", extra, cb);
         };
-        go.setOnClickListener(v -> doSearch.run());
+        final Runnable liveSearch = () -> doSearch.accept(false);
+        rebuildHistoryRef[0] = () -> {
+            historyRow.removeAllViews();
+            java.util.List<String> hist = loadSearchHistory();
+            historyBox.setVisibility(hist.isEmpty() ? View.GONE : View.VISIBLE);
+            for (String query : hist) {
+                TextView chip = new TextView(MainActivity.this);
+                chip.setText(query);
+                chip.setTextColor(Color.WHITE);
+                chip.setTextSize(15);
+                chip.setSingleLine(true);
+                chip.setPadding(dp(16), dp(8), dp(16), dp(8));
+                chip.setFocusable(true);
+                chip.setClickable(true);
+                chip.setBackgroundColor(Color.parseColor("#2A4A5A"));
+                chip.setOnFocusChangeListener((v, hasFocus) ->
+                        chip.setBackgroundColor(Color.parseColor(
+                                hasFocus ? "#35617A" : "#2A4A5A")));
+                final String q = query;
+                chip.setOnClickListener(v -> {
+                    input.setText(q);
+                    main.removeCallbacks(liveSearch);
+                    doSearch.accept(true);
+                });
+                LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                clp.rightMargin = dp(8);
+                historyRow.addView(chip, clp);
+            }
+        };
+        rebuildHistoryRef[0].run();
+        go.setOnClickListener(v -> {
+            main.removeCallbacks(liveSearch);
+            doSearch.accept(true);
+        });
         input.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH
                     || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
-                doSearch.run();
+                main.removeCallbacks(liveSearch);
+                doSearch.accept(true);
                 return true;
             }
             return false;
+        });
+        // v1.1.1: search directly as the user types — debounced
+        // 500ms so one keystroke burst fires one search, not one
+        // request per character.
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
+            public void onTextChanged(CharSequence s, int st, int b, int c) {
+                main.removeCallbacks(liveSearch);
+                main.postDelayed(liveSearch, 500);
+            }
+            public void afterTextChanged(android.text.Editable s) {}
         });
         return col;
     }
@@ -2155,7 +2283,7 @@ public class MainActivity extends Activity {
         col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        addSettingRow(col, "Version", "0.10.30 (build 55)");
+        addSettingRow(col, "Version", "1.1.1 (build 61)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
@@ -2185,10 +2313,10 @@ public class MainActivity extends Activity {
 
     // ---------------- posters ----------------
 
-    /** Full-app background (v0.10.30, fixed v0.10.30): the focused
+    /** Full-app background (v0.10.26, fixed v0.10.27): the focused
      *  title's backdrop (or poster) blurred and darkened, drawn in a
      *  dedicated ImageView that sits UNDER the whole root layout.
-     *  v0.10.30 drew it as the window background, which never showed:
+     *  v0.10.26 drew it as the window background, which never showed:
      *  the decor view's solid #14161A background paints over the
      *  window background drawable. The sidebar stays solid for
      *  readability; the blurred photo shows through the transparent
