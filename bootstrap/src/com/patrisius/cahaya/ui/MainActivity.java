@@ -34,8 +34,11 @@ import com.patrisius.cahaya.qr.QrCode;
 import com.patrisius.cahaya.web.AddonWebServer;
 import com.patrisius.cahaya.addon.CatalogItem;
 import com.patrisius.cahaya.addon.StreamItem;
+import com.patrisius.cahaya.jsrunner.JsScraperRunner;
 import com.patrisius.cahaya.plugin.Plugin;
 import com.patrisius.cahaya.plugin.PluginManager;
+import com.patrisius.cahaya.scraper.FibWatchScraper;
+import com.patrisius.cahaya.scraper.Scraper;
 import com.patrisius.cahaya.torrent.TorrentStreamer;
 
 import org.json.JSONObject;
@@ -142,7 +145,7 @@ public class MainActivity extends Activity {
 
         sidebar = new LinearLayout(this);
         sidebar.setOrientation(LinearLayout.VERTICAL);
-        sidebar.setBackgroundColor(Color.parseColor("#1B1E23"));
+        sidebar.setBackgroundColor(Color.TRANSPARENT); // v0.10.30: blurred photo shows through the side panel too
         int sideW = dp(280);
         root.addView(sidebar, new LinearLayout.LayoutParams(
                 sideW, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -229,7 +232,19 @@ public class MainActivity extends Activity {
         contentCol.addView(content, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        setContentView(root);
+        // Blurred-background layer under everything (v0.10.30):
+        // a plain ImageView first in a FrameLayout, root on top of it.
+        FrameLayout frame = new FrameLayout(this);
+        appBgView = new ImageView(this);
+        appBgView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        appBgView.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        frame.addView(appBgView);
+        frame.addView(root, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(frame);
         root.getViewTreeObserver().addOnGlobalFocusChangeListener(
                 (oldFocus, newFocus) -> {
                     if (newFocus == null) {
@@ -320,6 +335,36 @@ public class MainActivity extends Activity {
                     : android.view.Gravity.CENTER);
             row.setPadding(sidePad, dp(12), sidePad, dp(12));
         }
+    }
+
+    /** v0.10.30/30: pressing Left from the content pane must land on
+     *  the menu row of the tab currently displayed, not on whatever
+     *  sidebar row Android's focus search finds nearest — from a low
+     *  row (e.g. Popular Movies) that was Settings at the bottom.
+     *  v0.10.30 grabbed EVERY Left press, which broke stepping back
+     *  left through the cards in a row. v0.10.30 only overrides when
+     *  focus search finds no content view to the left (or a sidebar
+     *  view): a card with a neighbour to its left keeps normal
+     *  navigation. EditText focus is left alone so Left still moves
+     *  the text cursor in the Search box and in dialogs. */
+    @Override
+    public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN
+                && event.getKeyCode() == android.view.KeyEvent.KEYCODE_DPAD_LEFT) {
+            View focus = getCurrentFocus();
+            if (focus != null && !(focus instanceof android.widget.EditText)
+                    && !isUnder(focus, sidebar)
+                    && selected >= 0 && selected < menuRows.size()) {
+                View next = android.view.FocusFinder.getInstance()
+                        .findNextFocus((ViewGroup) getWindow().getDecorView(),
+                                focus, View.FOCUS_LEFT);
+                if (next == null || isUnder(next, sidebar)) {
+                    menuRows.get(selected).requestFocus();
+                    return true;
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event);
     }
 
     private static boolean isUnder(View v, ViewGroup parent) {
@@ -466,8 +511,9 @@ public class MainActivity extends Activity {
 
     /** "Playing History" row (v0.10.12, was "Lanjutkan Menonton"): the
      *  very first row on Home, above all catalog rows. Cards click to
-     *  auto-resume playback at the saved position (see
-     *  resumeHistoryItem), not to a Details screen. */
+     *  a stream picker (see resumeHistoryItem), not to a Details screen
+     *  and not straight to playback: the user picks a stream first,
+     *  then the player resumes at the recorded position. */
     private View continueRow = null;
     private void refreshContinueWatching() {
         if (homeRows == null) return;
@@ -590,13 +636,21 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    /** Playing History click (v0.10.12): auto-resume playback.
-     *  Collects streams from every addon/plugin exactly like Details,
-     *  sorts most-seeders-first, auto-picks the top stream (no picker),
-     *  and launches the player with start_pos = saved position.
-     *  Torrent streams go through TorrentStreamer first, like Details,
-     *  but unlike Details' torrent path this one DOES pass start_pos,
-     *  so torrents resume too. */
+    /** Playing History click (v0.10.30 pick-then-resume, v0.10.30
+     *  all sources): collects streams from every addon/plugin AND
+     *  the in-app scrapers (FibWatch + WebView JS 4khdhub/playimdb),
+     *  exactly like Details, sorts most-seeders-first, and shows a
+     *  stream picker — no automatic playback. Whichever stream the
+     *  user picks, the player is launched with start_pos = saved
+     *  position, so playback resumes at the recorded elapsed time.
+     *  Torrent picks go through TorrentStreamer first, like Details,
+     *  and this path DOES pass start_pos, so torrents resume too.
+     *  Why a meta fetch first: the history item carries no moviedbId
+     *  (JS scrapers need it), no year, and for series its title may
+     *  include an episode suffix (FibWatch needs the series title).
+     *  The meta call supplies name/year/moviedbId; on meta failure
+     *  it falls back to the stored title with the addon/plugin
+     *  sources still running. */
     private void resumeHistoryItem(ContinueWatching.Item it) {
         final AlertDialog progress = new AlertDialog.Builder(this)
                 .setMessage("Finding streams…")
@@ -604,6 +658,61 @@ public class MainActivity extends Activity {
                 .create();
         progress.show();
 
+        // Series episode ids look like "tt1234567:1:2"; the meta call
+        // needs the bare series id, and the scrapers need season/ep.
+        String seriesId = it.videoId;
+        int season = 0;
+        int episode = 0;
+        if ("series".equals(it.type) && it.videoId != null) {
+            String[] parts = it.videoId.split(":");
+            if (parts.length >= 1) {
+                seriesId = parts[0];
+            }
+            if (parts.length >= 3) {
+                try {
+                    season = Integer.parseInt(parts[1]);
+                    episode = Integer.parseInt(parts[2]);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        final int fSeason = season;
+        final int fEpisode = episode;
+        mgr.meta(AddonManager.DEFAULT_ADDON, it.type, seriesId,
+                new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
+                    @Override
+                    public void onResult(com.patrisius.cahaya.addon.MetaDetails d) {
+                        int year = 0;
+                        if (d.releaseInfo != null) {
+                            java.util.regex.Matcher ym = java.util.regex.Pattern
+                                    .compile("\\b(19|20)\\d{2}\\b")
+                                    .matcher(d.releaseInfo);
+                            if (ym.find()) {
+                                try {
+                                    year = Integer.parseInt(ym.group());
+                                } catch (Exception ignored) {
+                                }
+                            }
+                        }
+                        collectHistoryStreams(it, d.name, year, d.moviedbId,
+                                fSeason, fEpisode, progress);
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        collectHistoryStreams(it, it.title, 0, 0,
+                                fSeason, fEpisode, progress);
+                    }
+                });
+    }
+
+    /** Stream collection for a history item, after the meta lookup.
+     *  Addons + plugins + FibWatch + 2 JS providers, same as Details;
+     *  a dead source just contributes nothing and never blocks the
+     *  picker. */
+    private void collectHistoryStreams(ContinueWatching.Item it,
+            String scraperTitle, int scraperYear, int moviedbId,
+            int season, int episode, AlertDialog progress) {
         final List<StreamItem> all = new ArrayList<>();
         final List<String> addonUrls = new ArrayList<>(mgr.addonUrls());
         final List<Plugin> enabledPlugins = new ArrayList<>();
@@ -612,14 +721,8 @@ public class MainActivity extends Activity {
                 enabledPlugins.add(p);
             }
         }
-        final AtomicInteger pending =
-                new AtomicInteger(addonUrls.size() + enabledPlugins.size());
-        if (pending.get() == 0) {
-            progress.dismiss();
-            Toast.makeText(this, "No addons or plugins installed",
-                    Toast.LENGTH_SHORT).show();
-            return;
-        }
+        final AtomicInteger pending = new AtomicInteger(
+                addonUrls.size() + enabledPlugins.size() + 3);
 
         final Runnable done = () -> {
             if (pending.decrementAndGet() > 0) {
@@ -634,19 +737,7 @@ public class MainActivity extends Activity {
             }
             java.util.Collections.sort(all, (a, b) ->
                     Integer.compare(b.seeders, a.seeders));
-            StreamItem s = all.get(0);
-            if (s.isTorrent()) {
-                playHistoryTorrent(it, s);
-                return;
-            }
-            Intent i = new Intent(MainActivity.this, PlayerActivity.class);
-            i.putExtra("url", s.url);
-            i.putExtra("title", it.title);
-            i.putExtra("type", it.type);
-            i.putExtra("video_id", it.videoId);
-            if (it.poster != null) i.putExtra("poster", it.poster);
-            if (it.position > 0) i.putExtra("start_pos", it.position);
-            startActivity(i);
+            showHistoryPicker(it, all);
         };
 
         AddonManager.Callback<List<StreamItem>> collect =
@@ -681,6 +772,102 @@ public class MainActivity extends Activity {
                         }
                     });
         }
+        new FibWatchScraper().getStreams(scraperTitle, scraperYear,
+                it.type, season, episode,
+                new Scraper.Callback() {
+                    @Override
+                    public void onResult(List<StreamItem> items) {
+                        collect.onResult(items);
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        collect.onError(e);
+                    }
+                });
+        String[] jsProviders = {
+                JsScraperRunner.PROVIDER_4KHDHUB,
+                JsScraperRunner.PROVIDER_PLAYIMDB,
+        };
+        for (String pid : jsProviders) {
+            new JsScraperRunner(this, pid).run(moviedbId, it.type,
+                    season, episode,
+                    new JsScraperRunner.Callback() {
+                        @Override
+                        public void onResult(List<StreamItem> items) {
+                            collect.onResult(items);
+                        }
+
+                        @Override
+                        public void onError(String message) {
+                            collect.onError(new Exception(message));
+                        }
+                    });
+        }
+    }
+
+    /** Stream picker for a Playing History card. Same shape as
+     *  Details' picker: title + host (torrents also show seeders and
+     *  size). The picked stream — torrent or direct — is launched
+     *  with start_pos = the recorded position, so the player resumes
+     *  at the elapsed time the app recorded, whatever the source. */
+    private void showHistoryPicker(ContinueWatching.Item it,
+                                   List<StreamItem> streams) {
+        String[] labels = new String[streams.size()];
+        for (int i = 0; i < streams.size(); i++) {
+            StreamItem s = streams.get(i);
+            String sub = s.source;
+            try {
+                sub = new java.net.URL(s.source).getHost();
+            } catch (Exception ignored) {
+            }
+            if (s.isTorrent()) {
+                StringBuilder sb = new StringBuilder();
+                if (s.seeders >= 0) {
+                    sb.append("👤 ").append(s.seeders).append(" seeders");
+                }
+                if (s.size != null) {
+                    if (sb.length() > 0) sb.append(" · ");
+                    sb.append(s.size);
+                }
+                if (sb.length() > 0) sb.append(" · ");
+                sb.append(sub);
+                sub = sb.toString();
+            }
+            labels[i] = s.title + "\n" + sub;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Choose stream")
+                .setItems(labels, (d, which) -> {
+                    StreamItem s = streams.get(which);
+                    if (s.isTorrent()) {
+                        playHistoryTorrent(it, s);
+                        return;
+                    }
+                    Intent i = new Intent(MainActivity.this,
+                            PlayerActivity.class);
+                    i.putExtra("url", s.url);
+                    i.putExtra("title", it.title);
+                    i.putExtra("type", it.type);
+                    i.putExtra("video_id", it.videoId);
+                    if (it.poster != null) i.putExtra("poster", it.poster);
+                    if (s.headers != null && !s.headers.isEmpty()) {
+                        StringBuilder hb = new StringBuilder();
+                        for (java.util.Map.Entry<String, String> e
+                                : s.headers.entrySet()) {
+                            if (hb.length() > 0) hb.append("\n");
+                            hb.append(e.getKey()).append(": ")
+                                    .append(e.getValue());
+                        }
+                        i.putExtra("headers", hb.toString());
+                    }
+                    if (it.position > 0) {
+                        i.putExtra("start_pos", it.position);
+                    }
+                    startActivity(i);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void playHistoryTorrent(ContinueWatching.Item it, StreamItem s) {
@@ -740,9 +927,17 @@ public class MainActivity extends Activity {
     // Adaptive hero banner (v0.10.2): one persistent banner at the top of
     // Home. Every card focus calls updateHero(item), which swaps the banner
     // to that title immediately (catalog name/poster/type) and then fills
-    // in the full info (description, year, genres, rating, backdrop,
-    // episode count) from /meta. Meta results are cached per id so moving
-    // back to a title is instant; a sequence guard drops stale replies.
+    // in the full info (description, year, genres, IMDb rating, backdrop,
+    // episode count) from /meta. Meta results are cached per id in
+    // memory AND on disk (SharedPreferences), so banner info persists
+    // across restarts and shows instantly instead of "Loading info…"
+    // on every focus; a cached banner still refreshes in the
+    // background and updates only if Cinemeta's data changed (so a
+    // rating that was empty when first cached can appear later).
+    // A sequence guard drops stale replies.
+    // Episode cards (Playing History) carry composite ids like
+    // "tt123:1:2": the meta fetch uses the bare series id, while the
+    // banner title stays the episode title.
     private View heroView = null;
     // v0.10.4: fixed slot ABOVE the Home ScrollView. The hero lives here,
     // not inside homeRows, so it stays pinned at the top while the rows
@@ -895,31 +1090,134 @@ public class MainActivity extends Activity {
      * genres, rating, backdrop and episode count. Cached meta applies
      * instantly. Stale /meta replies (focus moved on) are dropped.
      */
+    /** Bare id for a meta lookup: episode ids "tt123:1:2" -> "tt123". */
+    private static String heroBaseId(String id) {
+        if (id == null) return "";
+        int c = id.indexOf(':');
+        return c >= 0 ? id.substring(0, c) : id;
+    }
+
+    /** Disk-persistent hero meta cache (SharedPreferences, JSON per id). */
+    private android.content.SharedPreferences heroMetaPrefs() {
+        return getSharedPreferences("hero_meta_cache", MODE_PRIVATE);
+    }
+
+    private void saveHeroMeta(com.patrisius.cahaya.addon.MetaDetails d) {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("id", d.id);
+            o.put("type", d.type);
+            o.put("name", d.name);
+            o.put("poster", d.poster);
+            o.put("background", d.background);
+            o.put("description", d.description);
+            o.put("releaseInfo", d.releaseInfo);
+            o.put("genres", d.genres);
+            o.put("rating", d.rating);
+            o.put("moviedbId", d.moviedbId);
+            o.put("episodeCount", d.episodeCount);
+            heroMetaPrefs().edit().putString("hero:" + d.id, o.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private com.patrisius.cahaya.addon.MetaDetails loadHeroMetaDisk(String metaId) {
+        try {
+            String s = heroMetaPrefs().getString("hero:" + metaId, null);
+            if (s == null) return null;
+            JSONObject o = new JSONObject(s);
+            com.patrisius.cahaya.addon.MetaDetails d =
+                    new com.patrisius.cahaya.addon.MetaDetails();
+            d.id = o.optString("id", metaId);
+            d.type = o.optString("type", "");
+            d.name = o.optString("name", "");
+            d.poster = o.optString("poster", null);
+            d.background = o.optString("background", null);
+            d.description = o.optString("description", "");
+            d.releaseInfo = o.optString("releaseInfo", "");
+            d.genres = o.optString("genres", "");
+            d.rating = o.optString("rating", "");
+            d.moviedbId = o.optInt("moviedbId", 0);
+            d.episodeCount = o.optInt("episodeCount", 0);
+            return d;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** True when two meta results would render the same banner. */
+    private static boolean heroMetaEquals(
+            com.patrisius.cahaya.addon.MetaDetails a,
+            com.patrisius.cahaya.addon.MetaDetails b) {
+        if (a == null || b == null) return a == b;
+        return eq(a.name, b.name) && eq(a.releaseInfo, b.releaseInfo)
+                && eq(a.genres, b.genres) && eq(a.rating, b.rating)
+                && eq(a.description, b.description)
+                && eq(a.background, b.background) && eq(a.poster, b.poster)
+                && eq(a.type, b.type) && a.episodeCount == b.episodeCount;
+    }
+
+    private static boolean eq(String a, String b) {
+        return a == null ? b == null : a.equals(b);
+    }
+
     private void updateHero(CatalogItem item) {
         if (item == null || heroView == null) return;
         if (heroItem != null && heroItem.id.equals(item.id)) return;
         heroItem = item;
         final int seq = ++heroMetaSeq;
+        final String metaId = heroBaseId(item.id);
 
         heroBadge.setText("series".equals(item.type) ? "★ SERIES" : "★ MOVIE");
         heroTitle.setText(item.name);
         heroMeta.setText("series".equals(item.type) ? "Series" : "Movie");
         heroDesc.setText("");
         loadPoster(item.poster, heroBg);
+        updateAppBackground(item.poster);
 
-        com.patrisius.cahaya.addon.MetaDetails cached = heroMetaCache.get(item.id);
+        com.patrisius.cahaya.addon.MetaDetails cached = heroMetaCache.get(metaId);
+        if (cached == null) {
+            cached = loadHeroMetaDisk(metaId);
+            if (cached != null) {
+                heroMetaCache.put(metaId, cached);
+            }
+        }
         if (cached != null) {
             applyHeroMeta(cached);
+            // Background refresh: the cached banner stays on screen
+            // while fresh meta is fetched; if Cinemeta changed
+            // (e.g. a rating filled in since the cache was written),
+            // the banner and both caches update. A failed refresh
+            // is silent — the cached banner is better than blank.
+            final com.patrisius.cahaya.addon.MetaDetails shown = cached;
+            mgr.meta(AddonManager.DEFAULT_ADDON, item.type, metaId,
+                    new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
+                        @Override
+                        public void onResult(com.patrisius.cahaya.addon.MetaDetails d) {
+                            if (seq != heroMetaSeq || heroItem == null
+                                    || !heroItem.id.equals(item.id)) return;
+                            heroMetaCache.put(d.id, d);
+                            saveHeroMeta(d);
+                            if (!heroMetaEquals(shown, d)) {
+                                applyHeroMeta(d);
+                            }
+                        }
+
+                        @Override
+                        public void onError(Exception e) {
+                        }
+                    });
             return;
         }
         heroDesc.setText("Loading info…");
-        mgr.meta(AddonManager.DEFAULT_ADDON, item.type, item.id,
+        mgr.meta(AddonManager.DEFAULT_ADDON, item.type, metaId,
                 new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
                     @Override
                     public void onResult(com.patrisius.cahaya.addon.MetaDetails d) {
                         if (seq != heroMetaSeq || heroItem == null
-                                || !heroItem.id.equals(d.id)) return;
+                                || !heroItem.id.equals(item.id)) return;
                         heroMetaCache.put(d.id, d);
+                        saveHeroMeta(d);
                         applyHeroMeta(d);
                     }
 
@@ -933,20 +1231,31 @@ public class MainActivity extends Activity {
                 });
     }
 
-    /** Fill the banner from a /meta result (backdrop preferred over poster). */
+    /** Fill the banner from a /meta result (backdrop preferred over poster).
+     *  For episode cards the banner title stays the episode title;
+     *  only the meta line, description and backdrop come from the
+     *  series meta. The rating shown is Cinemeta's imdbRating — it
+     *  appears only when Cinemeta actually carries one for the title
+     *  (e.g. Breaking Bad 9.5); an empty rating means the source has
+     *  none, not that the banner drops it. */
     private void applyHeroMeta(com.patrisius.cahaya.addon.MetaDetails d) {
-        if (heroItem == null || !heroItem.id.equals(d.id)) return;
+        if (heroItem == null || !heroBaseId(heroItem.id).equals(d.id)) return;
         if (d.background != null && !d.background.isEmpty()) {
             loadPoster(d.background, heroBg);
+            updateAppBackground(d.background);
         } else if (d.poster != null) {
             loadPoster(d.poster, heroBg);
+            updateAppBackground(d.poster);
         }
-        if (d.name != null && !d.name.isEmpty()) heroTitle.setText(d.name);
+        if (heroItem.id.equals(d.id) && d.name != null && !d.name.isEmpty()) {
+            heroTitle.setText(d.name);
+        }
         StringBuilder meta = new StringBuilder();
         if (d.releaseInfo != null && !d.releaseInfo.isEmpty()) meta.append(d.releaseInfo);
         meta.append(meta.length() > 0 ? "  ·  " : "")
                 .append("series".equals(d.type) ? "Series" : "Movie");
-        if (d.isSeries()) meta.append("  ·  ").append(d.videos.size()).append(" episodes");
+        int eps = d.episodeCount > 0 ? d.episodeCount : d.videos.size();
+        if (eps > 0) meta.append("  ·  ").append(eps).append(" episodes");
         if (d.genres != null && !d.genres.isEmpty()) meta.append("  ·  ").append(d.genres);
         if (d.rating != null && !d.rating.isEmpty()) meta.append("  ·  ★ ").append(d.rating);
         heroMeta.setText(meta.toString());
@@ -1330,7 +1639,7 @@ public class MainActivity extends Activity {
         col.addView(bar);
 
         TextView note = new TextView(this);
-        note.setText("Searches titles already loaded on Home. Full cross-addon search in v0.3.");
+        note.setText("Searches Cinemeta movies + series live. Loaded Home titles are included too.");
         note.setTextColor(Color.GRAY);
         note.setPadding(0, dp(8), 0, dp(8));
         col.addView(note);
@@ -1343,29 +1652,85 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         Runnable doSearch = () -> {
-            String q = input.getText().toString().trim().toLowerCase();
+            String raw = input.getText().toString().trim();
+            final String q = raw.toLowerCase();
             results.removeAllViews();
             if (q.isEmpty()) {
                 return;
             }
-            List<CatalogItem> hits = new ArrayList<>();
-            for (CatalogItem it : allItems) {
-                if (it.name.toLowerCase().contains(q)) {
-                    hits.add(it);
-                }
+            TextView searching = new TextView(this);
+            searching.setText("Searching Cinemeta for \"" + raw + "\"…");
+            searching.setTextColor(Color.GRAY);
+            results.addView(searching);
+            // Live Cinemeta search: /catalog/{type}/top/search=<query>.json
+            // (verified live 2026-10-24). Nuvio's catalog returns empty
+            // for search, so Cinemeta is the only live source here.
+            final String extra;
+            try {
+                extra = "search=" + java.net.URLEncoder.encode(raw, "UTF-8")
+                        .replace("+", "%20");
+            } catch (Exception e) {
+                results.removeAllViews();
+                TextView err = new TextView(this);
+                err.setText("Could not encode search query.");
+                err.setTextColor(Color.GRAY);
+                results.addView(err);
+                return;
             }
-            if (hits.isEmpty()) {
-                TextView empty = new TextView(this);
-                empty.setText("No matches for \"" + q + "\" in loaded titles.");
-                empty.setTextColor(Color.GRAY);
-                results.addView(empty);
-            } else {
-                results.addView(makeRow(hits.size() + " result(s)", hits));
-                View f = firstFocusable(results);
-                if (f != null) {
-                    f.requestFocus();
+            final List<CatalogItem> live = new ArrayList<>();
+            final int[] done = {0};
+            final int[] failed = {0};
+            AddonManager.Callback<List<CatalogItem>> cb =
+                    new AddonManager.Callback<List<CatalogItem>>() {
+                public void onResult(List<CatalogItem> items) {
+                    if (items != null) {
+                        live.addAll(items);
+                    }
+                    finish();
                 }
-            }
+                public void onError(Exception e) {
+                    failed[0]++;
+                    finish();
+                }
+                private void finish() {
+                    done[0]++;
+                    if (done[0] < 2) {
+                        return;
+                    }
+                    results.removeAllViews();
+                    // Live results first, then loaded-Home matches not
+                    // already present, deduped by catalog id.
+                    List<CatalogItem> hits = new ArrayList<>();
+                    java.util.Set<String> seen = new java.util.HashSet<>();
+                    for (CatalogItem it : live) {
+                        if (seen.add(it.id)) {
+                            hits.add(it);
+                        }
+                    }
+                    for (CatalogItem it : allItems) {
+                        if (it.name.toLowerCase().contains(q)
+                                && seen.add(it.id)) {
+                            hits.add(it);
+                        }
+                    }
+                    if (hits.isEmpty()) {
+                        TextView empty = new TextView(MainActivity.this);
+                        empty.setText(failed[0] == 2
+                                ? "Search failed — check connection and try again."
+                                : "No matches for \"" + q + "\".");
+                        empty.setTextColor(Color.GRAY);
+                        results.addView(empty);
+                    } else {
+                        results.addView(makeRow(hits.size() + " result(s)", hits));
+                        View f = firstFocusable(results);
+                        if (f != null) {
+                            f.requestFocus();
+                        }
+                    }
+                }
+            };
+            mgr.catalogExtra(AddonManager.DEFAULT_ADDON, "movie", "top", extra, cb);
+            mgr.catalogExtra(AddonManager.DEFAULT_ADDON, "series", "top", extra, cb);
         };
         go.setOnClickListener(v -> doSearch.run());
         input.setOnEditorActionListener((v, actionId, event) -> {
@@ -1790,7 +2155,7 @@ public class MainActivity extends Activity {
         col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        addSettingRow(col, "Version", "0.10.20 (build 45)");
+        addSettingRow(col, "Version", "0.10.30 (build 55)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
@@ -1819,6 +2184,119 @@ public class MainActivity extends Activity {
     }
 
     // ---------------- posters ----------------
+
+    /** Full-app background (v0.10.30, fixed v0.10.30): the focused
+     *  title's backdrop (or poster) blurred and darkened, drawn in a
+     *  dedicated ImageView that sits UNDER the whole root layout.
+     *  v0.10.30 drew it as the window background, which never showed:
+     *  the decor view's solid #14161A background paints over the
+     *  window background drawable. The sidebar stays solid for
+     *  readability; the blurred photo shows through the transparent
+     *  content area behind the rows. Blur runs on imgIo over a small
+     *  downscaled copy, so it is cheap; a sequence guard drops stale
+     *  replies on fast focus moves. */
+    private int appBgSeq = 0;
+    private ImageView appBgView = null;
+
+    private void updateAppBackground(String url) {
+        if (url == null || url.isEmpty()) return;
+        final int seq = ++appBgSeq;
+        final String u = url;
+        imgIo.execute(() -> {
+            try {
+                android.graphics.Bitmap src = memCache.get(u);
+                if (src == null) {
+                    HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+                    c.setConnectTimeout(15000);
+                    c.setReadTimeout(30000);
+                    c.setRequestProperty("User-Agent", "Cahaya/0.7.0 (Android TV)");
+                    InputStream in = c.getInputStream();
+                    src = BitmapFactory.decodeStream(in);
+                    in.close();
+                    if (src != null) memCache.put(u, src);
+                }
+                if (src == null) return;
+                // Downscale hard: a 160px-wide blurred image stretched
+                // over the window looks smooth and blurs in milliseconds.
+                int w = 160;
+                int h = Math.max(1, (int) (src.getHeight() * (w / (double) src.getWidth())));
+                android.graphics.Bitmap small = android.graphics.Bitmap.createScaledBitmap(
+                        src, w, h, true);
+                boxBlur(small, 8, 3);
+                android.graphics.Canvas cv = new android.graphics.Canvas(small);
+                cv.drawColor(Color.argb(120, 0, 0, 0));
+                final android.graphics.Bitmap bg = small;
+                main.post(() -> {
+                    if (seq != appBgSeq) return;
+                    if (appBgView != null) {
+                        appBgView.setImageBitmap(bg);
+                    }
+                });
+            } catch (Exception ignored) {
+                // Keep the solid window background on any failure.
+            }
+        });
+    }
+
+    /** Stack blur (fast box-blur approximation), in place, on a small bitmap. */
+    /** Separable box blur (prefix sums, 3 passes) — replaces the
+     *  v0.10.26 stack blur, which was verified offline to collapse
+     *  any image to a near-solid average colour (its sliding window
+     *  stopped advancing). This one was verified on a synthetic
+     *  red/blue/white image to preserve the colour gradient. */
+    private static void boxBlur(android.graphics.Bitmap bmp, int radius, int iters) {
+        if (radius < 1 || iters < 1) return;
+        int w = bmp.getWidth();
+        int h = bmp.getHeight();
+        int[] pix = new int[w * h];
+        bmp.getPixels(pix, 0, w, 0, 0, w, h);
+        int[] out = new int[w * h];
+        for (int it = 0; it < iters; it++) {
+            // Horizontal pass
+            for (int y = 0; y < h; y++) {
+                int[] pr = new int[w + 1];
+                int[] pg = new int[w + 1];
+                int[] pb = new int[w + 1];
+                for (int x = 0; x < w; x++) {
+                    int p = pix[y * w + x];
+                    pr[x + 1] = pr[x] + ((p >> 16) & 0xff);
+                    pg[x + 1] = pg[x] + ((p >> 8) & 0xff);
+                    pb[x + 1] = pb[x] + (p & 0xff);
+                }
+                for (int x = 0; x < w; x++) {
+                    int a = Math.max(0, x - radius);
+                    int b = Math.min(w, x + radius + 1);
+                    int n = b - a;
+                    out[y * w + x] = (0xff000000)
+                            | (((pr[b] - pr[a]) / n) << 16)
+                            | (((pg[b] - pg[a]) / n) << 8)
+                            | ((pb[b] - pb[a]) / n);
+                }
+            }
+            // Vertical pass
+            for (int x = 0; x < w; x++) {
+                int[] pr = new int[h + 1];
+                int[] pg = new int[h + 1];
+                int[] pb = new int[h + 1];
+                for (int y = 0; y < h; y++) {
+                    int p = out[y * w + x];
+                    pr[y + 1] = pr[y] + ((p >> 16) & 0xff);
+                    pg[y + 1] = pg[y] + ((p >> 8) & 0xff);
+                    pb[y + 1] = pb[y] + (p & 0xff);
+                }
+                for (int y = 0; y < h; y++) {
+                    int a = Math.max(0, y - radius);
+                    int b = Math.min(h, y + radius + 1);
+                    int n = b - a;
+                    pix[y * w + x] = (0xff000000)
+                            | (((pr[b] - pr[a]) / n) << 16)
+                            | (((pg[b] - pg[a]) / n) << 8)
+                            | ((pb[b] - pb[a]) / n);
+                }
+            }
+        }
+        bmp.setPixels(pix, 0, w, 0, 0, w, h);
+    }
 
     private void loadPoster(String url, ImageView into) {
         if (url == null || url.isEmpty()) {

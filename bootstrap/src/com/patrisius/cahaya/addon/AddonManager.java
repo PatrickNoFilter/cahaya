@@ -202,6 +202,7 @@ public class AddonManager {
                                     d.videos.add(vi);
                                 }
                             }
+                            d.episodeCount = d.videos.size();
                             cb.onResult(d);
                         } catch (Exception e) {
                             cb.onError(e);
