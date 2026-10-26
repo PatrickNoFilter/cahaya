@@ -237,9 +237,7 @@ public class DetailsActivity extends Activity {
                         Toast.LENGTH_LONG).show();
                 return;
             }
-            // Most seeders at top, like Nuvio; unknown counts last.
-            java.util.Collections.sort(all, (a, b) ->
-                    Integer.compare(b.seeders, a.seeders));
+            // v1.5.1: StreamPicker sorts seeders-desc within each column.
             showStreamPicker(title, videoId, all);
         };
 
@@ -309,13 +307,23 @@ public class DetailsActivity extends Activity {
         // headless WebView. Needs Cinemeta's moviedb_id; if the meta
         // has none, the runner fails fast and contributes nothing.
         // Fail-soft: a dead WebView never blocks the picker.
+        // v1.5.0: TMDB addon meta carries no moviedbId — derive the
+        // numeric id from a tmdb: id so the JS scrapers still run.
+        int jsMovieDbId = details.moviedbId;
+        if (jsMovieDbId == 0 && details.id != null
+                && details.id.startsWith("tmdb:")) {
+            try {
+                jsMovieDbId = Integer.parseInt(details.id.substring(5));
+            } catch (Exception ignored) {
+            }
+        }
         String[] jsProviders = {
                 JsScraperRunner.PROVIDER_4KHDHUB,
                 JsScraperRunner.PROVIDER_PLAYIMDB,
         };
         for (String pid : jsProviders) {
             final String providerId = pid;
-            new JsScraperRunner(this, providerId).run(details.moviedbId, itemType,
+            new JsScraperRunner(this, providerId).run(jsMovieDbId, itemType,
                     scraperSeason, scraperEpisode,
                     new JsScraperRunner.Callback() {
                         @Override
@@ -332,54 +340,32 @@ public class DetailsActivity extends Activity {
     }
 
     private void showStreamPicker(String title, String videoId, List<StreamItem> streams) {
-        String[] labels = new String[streams.size()];
-        for (int i = 0; i < streams.size(); i++) {
-            StreamItem s = streams.get(i);
-            String sub = hostOf(s.source);
+        // v1.5.1: grouped column picker (PlayIMDb / Torrentio /
+        // 4khdhub); the pick action is unchanged.
+        StreamPicker.show(this, "Choose stream", streams, s -> {
             if (s.isTorrent()) {
-                StringBuilder sb = new StringBuilder();
-                if (s.seeders >= 0) {
-                    sb.append("👤 ").append(s.seeders).append(" seeders");
-                }
-                if (s.size != null) {
-                    if (sb.length() > 0) sb.append(" · ");
-                    sb.append(s.size);
-                }
-                if (sb.length() > 0) sb.append(" · ");
-                sb.append(sub);
-                sub = sb.toString();
+                playTorrent(title, videoId, s);
+                return;
             }
-            labels[i] = s.title + "\n" + sub;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("Choose stream")
-                .setItems(labels, (d, which) -> {
-                    StreamItem s = streams.get(which);
-                    if (s.isTorrent()) {
-                        playTorrent(title, videoId, s);
-                        return;
-                    }
-                    Intent i = new Intent(DetailsActivity.this, PlayerActivity.class);
-                    i.putExtra("url", s.url);
-                    i.putExtra("title", title);
-                    i.putExtra("type", itemType);
-                    i.putExtra("video_id", videoId);
-                    i.putExtra("poster", details.poster);
-                    if (s.headers != null && !s.headers.isEmpty()) {
-                        StringBuilder hb = new StringBuilder();
-                        for (java.util.Map.Entry<String, String> e : s.headers.entrySet()) {
-                            if (hb.length() > 0) hb.append("\n");
-                            hb.append(e.getKey()).append(": ").append(e.getValue());
-                        }
-                        i.putExtra("headers", hb.toString());
-                    }
-                    // Pass resume position if coming from Continue Watching
-                    double resume = getIntent().getDoubleExtra("resume_pos", 0);
-                    if (resume > 0) i.putExtra("start_pos", resume);
-                    startActivity(i);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+            Intent i = new Intent(DetailsActivity.this, PlayerActivity.class);
+            i.putExtra("url", s.url);
+            i.putExtra("title", title);
+            i.putExtra("type", itemType);
+            i.putExtra("video_id", videoId);
+            i.putExtra("poster", details.poster);
+            if (s.headers != null && !s.headers.isEmpty()) {
+                StringBuilder hb = new StringBuilder();
+                for (java.util.Map.Entry<String, String> e : s.headers.entrySet()) {
+                    if (hb.length() > 0) hb.append("\n");
+                    hb.append(e.getKey()).append(": ").append(e.getValue());
+                }
+                i.putExtra("headers", hb.toString());
+            }
+            // Pass resume position if coming from Continue Watching
+            double resume = getIntent().getDoubleExtra("resume_pos", 0);
+            if (resume > 0) i.putExtra("start_pos", resume);
+            startActivity(i);
+        });
     }
 
     /** Nuvio-style: stream the torrent through our own engine. */
@@ -441,14 +427,6 @@ public class DetailsActivity extends Activity {
         // details may be null here; poster is optional
         try { i.putExtra("poster", details.poster); } catch (Throwable ignored) {}
         startActivity(i);
-    }
-
-    private static String hostOf(String url) {
-        try {
-            return new URL(url).getHost();
-        } catch (Exception e) {
-            return url;
-        }
     }
 
     private void loadPoster(String url, ImageView into) {

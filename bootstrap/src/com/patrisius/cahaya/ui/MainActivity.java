@@ -668,27 +668,47 @@ public class MainActivity extends Activity {
                 .create();
         progress.show();
 
-        // Series episode ids look like "tt1234567:1:2"; the meta call
-        // needs the bare series id, and the scrapers need season/ep.
+        // Series episode ids look like "tt1234567:1:2" (or
+        // "tmdb:293607:1:2"); the meta call needs the bare series
+        // id, and the scrapers need season/ep. Parse from the right
+        // (v1.5.1: the old parts[0]/[1]/[2] split broke tmdb: ids).
         String seriesId = it.videoId;
         int season = 0;
         int episode = 0;
         if ("series".equals(it.type) && it.videoId != null) {
             String[] parts = it.videoId.split(":");
-            if (parts.length >= 1) {
-                seriesId = parts[0];
-            }
             if (parts.length >= 3) {
                 try {
-                    season = Integer.parseInt(parts[1]);
-                    episode = Integer.parseInt(parts[2]);
+                    season = Integer.parseInt(parts[parts.length - 2]);
+                    episode = Integer.parseInt(parts[parts.length - 1]);
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 0; i < parts.length - 2; i++) {
+                        if (i > 0) sb.append(":");
+                        sb.append(parts[i]);
+                    }
+                    seriesId = sb.toString();
                 } catch (Exception ignored) {
                 }
             }
         }
         final int fSeason = season;
         final int fEpisode = episode;
-        mgr.meta(AddonManager.DEFAULT_ADDON, it.type, seriesId,
+        // v1.5.1: TMDB addon meta carries no moviedbId — derive it
+        // from the tmdb: id so the JS scrapers still run.
+        final int derivedMovieDbId;
+        {
+            int d = 0;
+            if (seriesId != null && seriesId.startsWith("tmdb:")) {
+                try {
+                    d = Integer.parseInt(seriesId.substring(5));
+                } catch (Exception ignored) {
+                }
+            }
+            derivedMovieDbId = d;
+        }
+        mgr.meta(seriesId != null && seriesId.startsWith("tmdb:")
+                        ? AddonManager.TMDB_ADDON : AddonManager.DEFAULT_ADDON,
+                it.type, seriesId,
                 new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
                     @Override
                     public void onResult(com.patrisius.cahaya.addon.MetaDetails d) {
@@ -704,13 +724,14 @@ public class MainActivity extends Activity {
                                 }
                             }
                         }
-                        collectHistoryStreams(it, d.name, year, d.moviedbId,
+                        collectHistoryStreams(it, d.name, year,
+                                d.moviedbId != 0 ? d.moviedbId : derivedMovieDbId,
                                 fSeason, fEpisode, progress);
                     }
 
                     @Override
                     public void onError(Exception e) {
-                        collectHistoryStreams(it, it.title, 0, 0,
+                        collectHistoryStreams(it, it.title, 0, derivedMovieDbId,
                                 fSeason, fEpisode, progress);
                     }
                 });
@@ -745,8 +766,7 @@ public class MainActivity extends Activity {
                         Toast.LENGTH_LONG).show();
                 return;
             }
-            java.util.Collections.sort(all, (a, b) ->
-                    Integer.compare(b.seeders, a.seeders));
+            // v1.5.1: StreamPicker sorts seeders-desc within each column.
             showHistoryPicker(it, all);
         };
 
@@ -823,65 +843,38 @@ public class MainActivity extends Activity {
      *  at the elapsed time the app recorded, whatever the source. */
     private void showHistoryPicker(ContinueWatching.Item it,
                                    List<StreamItem> streams) {
-        String[] labels = new String[streams.size()];
-        for (int i = 0; i < streams.size(); i++) {
-            StreamItem s = streams.get(i);
-            String sub = s.source;
-            try {
-                sub = new java.net.URL(s.source).getHost();
-            } catch (Exception ignored) {
-            }
+        // v1.5.1: same grouped column picker as Details Play.
+        StreamPicker.show(this, "Choose stream", streams, s -> {
             if (s.isTorrent()) {
-                StringBuilder sb = new StringBuilder();
-                if (s.seeders >= 0) {
-                    sb.append("👤 ").append(s.seeders).append(" seeders");
-                }
-                if (s.size != null) {
-                    if (sb.length() > 0) sb.append(" · ");
-                    sb.append(s.size);
-                }
-                if (sb.length() > 0) sb.append(" · ");
-                sb.append(sub);
-                sub = sb.toString();
+                playHistoryTorrent(it, s);
+                return;
             }
-            labels[i] = s.title + "\n" + sub;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("Choose stream")
-                .setItems(labels, (d, which) -> {
-                    StreamItem s = streams.get(which);
-                    if (s.isTorrent()) {
-                        playHistoryTorrent(it, s);
-                        return;
-                    }
-                    Intent i = new Intent(MainActivity.this,
-                            PlayerActivity.class);
-                    i.putExtra("url", s.url);
-                    i.putExtra("title", it.title);
-                    i.putExtra("type", it.type);
-                    i.putExtra("video_id", it.videoId);
-                    if (it.poster != null) i.putExtra("poster", it.poster);
-                    if (s.headers != null && !s.headers.isEmpty()) {
-                        StringBuilder hb = new StringBuilder();
-                        for (java.util.Map.Entry<String, String> e
-                                : s.headers.entrySet()) {
-                            if (hb.length() > 0) hb.append("\n");
-                            hb.append(e.getKey()).append(": ")
-                                    .append(e.getValue());
-                        }
-                        i.putExtra("headers", hb.toString());
-                    }
-                    // v1.1.0: a finished item restarts from 0, not
-                    // from its end position (which would end instantly).
-                    double resumePos = (it.duration > 0 && it.position >= it.duration - 30)
-                            ? 0 : it.position;
-                    if (resumePos > 0) {
-                        i.putExtra("start_pos", resumePos);
-                    }
-                    startActivity(i);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+            Intent i = new Intent(MainActivity.this,
+                    PlayerActivity.class);
+            i.putExtra("url", s.url);
+            i.putExtra("title", it.title);
+            i.putExtra("type", it.type);
+            i.putExtra("video_id", it.videoId);
+            if (it.poster != null) i.putExtra("poster", it.poster);
+            if (s.headers != null && !s.headers.isEmpty()) {
+                StringBuilder hb = new StringBuilder();
+                for (java.util.Map.Entry<String, String> e
+                        : s.headers.entrySet()) {
+                    if (hb.length() > 0) hb.append("\n");
+                    hb.append(e.getKey()).append(": ")
+                            .append(e.getValue());
+                }
+                i.putExtra("headers", hb.toString());
+            }
+            // v1.1.0: a finished item restarts from 0, not
+            // from its end position (which would end instantly).
+            double resumePos = (it.duration > 0 && it.position >= it.duration - 30)
+                    ? 0 : it.position;
+            if (resumePos > 0) {
+                i.putExtra("start_pos", resumePos);
+            }
+            startActivity(i);
+        });
     }
 
     private void playHistoryTorrent(ContinueWatching.Item it, StreamItem s) {
@@ -2528,7 +2521,7 @@ public class MainActivity extends Activity {
         col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        addSettingRow(col, "Version", "1.4.0 (build 67)");
+        addSettingRow(col, "Version", "1.5.5 (build 73)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");

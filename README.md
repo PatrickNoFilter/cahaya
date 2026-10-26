@@ -9,7 +9,7 @@ Nuvio and CloudStream — with support for community addons and plugins.
 
 ## Releases
 
-Current version: **1.4.0** (build 67). Release APKs are published on the
+Current version: **1.5.5** (build 73). Release APKs are published on the
 [Releases page](https://github.com/PatrickNoFilter/cahaya/releases) — one
 release per version, each carrying its own APK.
 
@@ -19,6 +19,31 @@ torrent engine. No Play Store release yet.
 
 ### Changelog
 
+- **1.5.5** — Stream-picker columns are sized to their content (capped
+  at an equal share) with exactly the same gap between every pair of
+  columns; the row is centered, so leftover space splits equally to
+  both edges.
+- **1.5.4** — Stream-picker options are uniform: every option is exactly
+  two lines (title + info: seeders/size/host for torrents, host
+  otherwise), same height and spacing in every column, rows aligned
+  across columns.
+- **1.5.3** — Picker columns condensed to equal-weight columns in a
+  near-full-width dialog so all columns are visible at once; Next
+  button fixed: picking a stream no longer exits to Home (mpv END_FILE
+  for the outgoing file is now ignored while a switch is in flight).
+- **1.5.2** — Stream-picker options are words only (no button
+  rectangles); the focused word turns blue.
+- **1.5.1** — Stream picker rebuilt as columns (not rows) in PlayIMDb,
+  Torrentio, 4khdhub order, plus an "Other" column when other sources
+  have streams; applied to Details Play, player Next, and Playing
+  History clicks. Playing History keeps one entry per title: a newer
+  episode replaces the older one, an older rewatch leaves the newer
+  entry untouched.
+- **1.5.0** — Stream picker grouped into source rows (PlayIMDb first,
+  Torrentio second, 4khdhub third) in Details Play and player Next;
+  Next and History paths fixed for `tmdb:` ids (right-anchored
+  season/episode parse, meta routed by id prefix, scraper id derived
+  from the `tmdb:` id).
 - **1.4.0** — Home rows are filtered: only titles Cinemeta or TMDB can
   back with a picture and info stay in the list; unresolvable titles
   drop out and lower-ranked titles move up to fill the row.

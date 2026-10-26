@@ -118,6 +118,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private SubtitlePrefs prefs;
     private int panelKind = P_NONE;
     private boolean mpvReady, surfaceReady, fileStarted, fileLoaded, destroyed;
+    // v1.5.3: Next-switch guard — loadfile (replace) makes mpv emit
+    // END_FILE for the outgoing file, which must not finish the
+    // activity while the new file is loading (see event() below).
+    private boolean switchingStream = false;
+    private int switchGeneration = 0;
     private boolean paused, buffering, wasPlayingOnPause;
     private double manualPos = 0;
     private volatile double mpvTimePos = -1, mpvDuration = -1;
@@ -534,6 +539,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     /** mpv reports FILE_LOADED (event 8) once the demuxer is open and tracks are known. */
     private void onFileLoaded() {
         fileLoaded = true;
+        switchingStream = false; // v1.5.3: the new file is in, end-file is real again
         prefs.applyToMpv();
         StringBuilder dump = new StringBuilder();
         for (MpvTrack t : MpvTrack.read("sub"))
@@ -586,13 +592,22 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
      *  Details), and let the user pick one — nothing auto-plays. */
     private void openNextEpisodePicker() {
         if (!"series".equals(type) || videoId == null) { hint("No next episode"); return; }
+        // v1.5.0: parse from the right — a tmdb: id ("tmdb:293607:1:2")
+        // has one more segment than a tt id ("tt123:1:2"), so the old
+        // parts[0]/[1]/[2] split read the wrong season and series.
         String[] parts = videoId.split(":");
         if (parts.length < 3) { hint("No next episode for this title"); return; }
-        final String seriesId = parts[0];
+        final String seriesId;
         final int curSeason, curEpisode;
         try {
-            curSeason = Integer.parseInt(parts[1]);
-            curEpisode = Integer.parseInt(parts[2]);
+            curSeason = Integer.parseInt(parts[parts.length - 2]);
+            curEpisode = Integer.parseInt(parts[parts.length - 1]);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < parts.length - 2; i++) {
+                if (i > 0) sb.append(":");
+                sb.append(parts[i]);
+            }
+            seriesId = sb.toString();
         } catch (Exception e) { hint("No next episode for this title"); return; }
 
         final AlertDialog progress = new AlertDialog.Builder(this)
@@ -602,7 +617,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         progress.show();
 
         final AddonManager mgr = ((CahayaApp) getApplication()).addons();
-        mgr.meta(AddonManager.DEFAULT_ADDON, "series", seriesId,
+        // v1.5.0: TMDB-sourced series fetch meta from the TMDB addon.
+        mgr.meta(seriesId.startsWith("tmdb:") ? AddonManager.TMDB_ADDON
+                : AddonManager.DEFAULT_ADDON, "series", seriesId,
                 new AddonManager.Callback<MetaDetails>() {
                     @Override public void onResult(MetaDetails meta) {
                         if (destroyed) return;
@@ -668,8 +685,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                         Toast.LENGTH_LONG).show();
                 return;
             }
-            java.util.Collections.sort(all, (a, b) ->
-                    Integer.compare(b.seeders, a.seeders));
+            // v1.5.1: StreamPicker sorts seeders-desc within each column.
             showNextPicker(nextTitle, nextVideoId, nextPoster, all);
         };
         AddonManager.Callback<List<StreamItem>> collect =
@@ -707,10 +723,20 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                         collect.onError(e);
                     }
                 });
+        // v1.5.0: TMDB addon meta carries no moviedbId — derive it
+        // from the tmdb: id so the JS scrapers still run.
+        int jsMovieDbId = meta.moviedbId;
+        if (jsMovieDbId == 0 && meta.id != null
+                && meta.id.startsWith("tmdb:")) {
+            try {
+                jsMovieDbId = Integer.parseInt(meta.id.substring(5));
+            } catch (Exception ignored) {
+            }
+        }
         for (String pid : new String[]{JsScraperRunner.PROVIDER_4KHDHUB,
                 JsScraperRunner.PROVIDER_PLAYIMDB}) {
             final String providerId = pid;
-            new JsScraperRunner(this, providerId).run(meta.moviedbId, "series",
+            new JsScraperRunner(this, providerId).run(jsMovieDbId, "series",
                     nv.season, nv.episode,
                     new JsScraperRunner.Callback() {
                         @Override public void onResult(List<StreamItem> items) {
@@ -726,35 +752,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     private void showNextPicker(final String nextTitle, final String nextVideoId,
                                 final String nextPoster, final List<StreamItem> streams) {
-        String[] labels = new String[streams.size()];
-        for (int i = 0; i < streams.size(); i++) {
-            StreamItem s = streams.get(i);
-            String sub = hostOf(s.source);
+        // v1.5.1: same grouped column picker as Details Play.
+        StreamPicker.show(this, nextTitle, streams, s -> {
             if (s.isTorrent()) {
-                StringBuilder sb = new StringBuilder();
-                if (s.seeders >= 0) sb.append("👤 ").append(s.seeders).append(" seeders");
-                if (s.size != null) {
-                    if (sb.length() > 0) sb.append(" · ");
-                    sb.append(s.size);
-                }
-                if (sb.length() > 0) sb.append(" · ");
-                sb.append(sub);
-                sub = sb.toString();
+                playNextTorrent(nextTitle, nextVideoId, nextPoster, s);
+                return;
             }
-            labels[i] = s.title + "\n" + sub;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle(nextTitle)
-                .setItems(labels, (d, which) -> {
-                    StreamItem s = streams.get(which);
-                    if (s.isTorrent()) {
-                        playNextTorrent(nextTitle, nextVideoId, nextPoster, s);
-                        return;
-                    }
-                    switchToStream(s.url, s.headers, nextTitle, nextVideoId, nextPoster);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+            switchToStream(s.url, s.headers, nextTitle, nextVideoId, nextPoster);
+        });
     }
 
     private void playNextTorrent(final String nextTitle, final String nextVideoId,
@@ -843,6 +848,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         manualPos = 0;
         lastLiveSaveMs = 0;
         lastLiveSavePos = -1;
+        // v1.5.3: arm the switch guard BEFORE loadfile — the outgoing
+        // file's END_FILE arrives around the replacement.
+        switchingStream = true;
+        final int gen = ++switchGeneration;
+        main.postDelayed(() -> {
+            if (gen == switchGeneration) switchingStream = false;
+        }, 10000);
         try {
             MPVLib.command(new String[]{"loadfile", url});
         } catch (Throwable t) {
@@ -855,14 +867,6 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         showController();
         hint("Next: " + nTitle);
         updateProgress();
-    }
-
-    private static String hostOf(String url) {
-        try {
-            return new java.net.URL(url).getHost();
-        } catch (Exception e) {
-            return url;
-        }
     }
 
     private void seekRel(int seconds) {
@@ -1602,7 +1606,12 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     }
     @Override public void event(int eventId) {
         if (eventId == 8) main.post(this::onFileLoaded);          // MPV_EVENT_FILE_LOADED
-        else if (eventId == 7) main.post(this::finish);           // MPV_EVENT_END_FILE
+        // MPV_EVENT_END_FILE — v1.5.3: ignored while a Next switch is
+        // in flight, otherwise the outgoing file's end event finishes
+        // the player right after the user picks the next stream.
+        else if (eventId == 7) main.post(() -> {
+            if (!switchingStream) finish();
+        });
     }
 
     private int dp(int v) {
