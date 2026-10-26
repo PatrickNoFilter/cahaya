@@ -9,7 +9,7 @@ Nuvio and CloudStream — with support for community addons and plugins.
 
 ## Releases
 
-Current version: **1.1.1** (build 61). Release APKs are published on the
+Current version: **1.4.0** (build 67). Release APKs are published on the
 [Releases page](https://github.com/PatrickNoFilter/cahaya/releases) — one
 release per version, each carrying its own APK.
 
@@ -19,6 +19,26 @@ torrent engine. No Play Store release yet.
 
 ### Changelog
 
+- **1.4.0** — Home rows are filtered: only titles Cinemeta or TMDB can
+  back with a picture and info stay in the list; unresolvable titles
+  drop out and lower-ranked titles move up to fill the row.
+  Chinese-titled entries resolve to their English title via TMDB /
+  Cinemeta search.
+- **1.3.1** — Cinemeta alternative: TMDB addon fallback for titles
+  Cinemeta lacks (accepted only on an unambiguous exact match); hero
+  and Details meta route by id prefix; refresh-overwrite race fixed
+  so synced pictures survive a row rebuild.
+- **1.3.0** — Trending rows sync with Cinemeta: cards swap poster and
+  name in place to their real Cinemeta entry (exact-name match only);
+  synced cards open Details directly; hero shows real meta.
+- **1.2.0** — Home rebuilt: all old movie/series rows removed; Home is
+  now Playing History + five own trending rows (Korean, Japanese,
+  Chinese, Hollywood, Hollywood Movies) merged keylessly from 20
+  sources.
+- **1.1.3** — Back from any non-Home tab returns to Home first; second
+  Back on Home exits.
+- **1.1.2** — Search history also records on result click (even partial
+  words), guarded to the Search tab.
 - **1.1.1** — Search tab: "Recent searches" chip row (last 10 queries, most
   recent first) + live search as you type (500 ms debounce; live searches
   don't flood history or steal input focus).

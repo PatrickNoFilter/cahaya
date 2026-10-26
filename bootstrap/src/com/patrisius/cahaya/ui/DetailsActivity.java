@@ -91,7 +91,10 @@ public class DetailsActivity extends Activity {
         loading.setPadding(dp(28), dp(28), 0, 0);
         setContentView(loading);
 
-        mgr.meta(AddonManager.DEFAULT_ADDON, itemType, itemId,
+        // v1.3.1: TMDB-addon ids fetch meta from the TMDB addon.
+        String metaAddon = itemId != null && itemId.startsWith("tmdb:")
+                ? AddonManager.TMDB_ADDON : AddonManager.DEFAULT_ADDON;
+        mgr.meta(metaAddon, itemType, itemId,
                 new AddonManager.Callback<MetaDetails>() {
                     @Override
                     public void onResult(MetaDetails d) {

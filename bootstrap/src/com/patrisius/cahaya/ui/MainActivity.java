@@ -359,6 +359,17 @@ public class MainActivity extends Activity {
      *  the text cursor in the Search box and in dialogs. */
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        // v1.1.3: Back from any non-Home tab returns to Home first; a
+        // second Back, now on Home, falls through to the default path
+        // and exits. Dialogs and the on-screen keyboard consume Back
+        // in their own windows before it reaches here, so they still
+        // dismiss first.
+        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN
+                && event.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK
+                && selected != 0) {
+            selectMenu(0, true);
+            return true;
+        }
         if (event.getAction() == android.view.KeyEvent.ACTION_DOWN
                 && event.getKeyCode() == android.view.KeyEvent.KEYCODE_DPAD_LEFT) {
             View focus = getCurrentFocus();
@@ -475,7 +486,7 @@ public class MainActivity extends Activity {
         col.setOrientation(LinearLayout.VERTICAL);
 
         homeStatus = new TextView(this);
-        homeStatus.setText("Loading catalogs…");
+        homeStatus.setText("Loading trending…");
         homeStatus.setTextColor(Color.GRAY);
         col.addView(homeStatus);
 
@@ -491,25 +502,14 @@ public class MainActivity extends Activity {
 
         if (!homeLoaded) {
             homeLoaded = true;
-            loadRow("movie", "top", "Popular Movies");
-            loadRowFrom(AddonManager.DEFAULT_ADDON, "series", "top",
-                    null, "Popular Series", false);
-            // Asian rows (v0.10.6): Nuvio's by-language catalogs, already
-            // a built-in addon — ids are IMDb tt ids, so details/streams
-            // work exactly like the Cinemeta rows above.
-            String nuvio = AddonManager.NUVIO_CATALOG;
-            loadRowFrom(nuvio, "movie", "movies-by-language",
-                    "genre=Japanese", "Japanese Movies", false);
-            loadRowFrom(nuvio, "series", "series-by-language",
-                    "genre=Japanese", "Japanese Series", false);
-            loadRowFrom(nuvio, "movie", "movies-by-language",
-                    "genre=Korean", "Korean Movies", false);
-            loadRowFrom(nuvio, "series", "series-by-language",
-                    "genre=Korean", "Korean Series", false);
-            loadRowFrom(nuvio, "movie", "movies-by-language",
-                    "genre=Chinese", "Chinese Movies", false);
-            loadRowFrom(nuvio, "series", "series-by-language",
-                    "genre=Chinese", "Chinese Series", false);
+            // v1.2.0: the old catalog rows are gone at the user's word
+            // (Popular Movies / Popular Series + the six Nuvio
+            // by-language rows). Home is now Playing History (inserted
+            // at index 0 by refreshContinueWatching) plus our own
+            // merged trending rows, crawled from the sources validated
+            // 2026-10-26 (Tudum, Douban, K-Drama Crush, TMDB addon,
+            // IMDb charts, AniList). See TrendingEngine.
+            loadTrendingRows();
         } else if (!allItems.isEmpty()) {
             homeStatus.setVisibility(View.GONE);
         }
@@ -1019,6 +1019,217 @@ public class MainActivity extends Activity {
                 });
     }
 
+    /** Trending rows (v1.4.0): Home's only catalog rows besides
+     *  Playing History. Rows show only titles resolved to a
+     *  Cinemeta/TMDB entry with picture + info (resolveRows); cards
+     *  carry real ids and open Details directly. A background
+     *  refresh re-posts rows; the previous trending views are
+     *  removed first so they don't duplicate. Playing History is
+     *  untouched (refreshContinueWatching owns it, and it inserts
+     *  at index 0, so it stays first). */
+    private java.util.List<View> trendingViews = null;
+
+    private void loadTrendingRows() {
+        if (homeStatus != null) homeStatus.setText("Loading trending…");
+        com.patrisius.cahaya.addon.TrendingEngine.loadRows(this,
+                new AddonManager.Callback<java.util.Map<String, java.util.List<CatalogItem>>>() {
+                    @Override
+                    public void onResult(java.util.Map<String, java.util.List<CatalogItem>> rows) {
+                        if (homeRows == null) return;
+                        if (heroView == null) {
+                            heroView = makeHero();
+                            if (heroSlot != null && heroView.getParent() != heroSlot) {
+                                if (heroView.getParent() instanceof ViewGroup) {
+                                    ((ViewGroup) heroView.getParent()).removeView(heroView);
+                                }
+                                heroSlot.addView(heroView);
+                            }
+                        }
+                        if (trendingViews != null) {
+                            for (View v : trendingViews) homeRows.removeView(v);
+                        }
+                        trendingViews = new java.util.ArrayList<>();
+                        if (homeStatus != null) homeStatus.setText("Filtering trending…");
+                        final boolean[] seeded = new boolean[]{heroItem != null};
+                        com.patrisius.cahaya.addon.TrendingEngine.resolveRows(
+                                MainActivity.this, rows,
+                                new com.patrisius.cahaya.addon.TrendingEngine.RowListener() {
+                                    @Override
+                                    public void onRow(String key, java.util.List<CatalogItem> resolved) {
+                                        if (homeRows == null || resolved == null || resolved.isEmpty()) return;
+                                        if (!seeded[0]) {
+                                            updateHero(resolved.get(0));
+                                            seeded[0] = true;
+                                        }
+                                        View row = makeTrendingRow(
+                                                com.patrisius.cahaya.addon.TrendingEngine.titleForKey(key),
+                                                resolved);
+                                        trendingViews.add(row);
+                                        homeRows.addView(row);
+                                    }
+
+                                    @Override
+                                    public void onDone() {
+                                        if (homeStatus != null) homeStatus.setVisibility(View.GONE);
+                                        if (trendingViews.isEmpty() && homeStatus != null) {
+                                            homeStatus.setText("Couldn't load trending lists — check connection and reopen Home.");
+                                            homeStatus.setVisibility(View.VISIBLE);
+                                        }
+                                    }
+                                });
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        if (homeStatus != null) {
+                            homeStatus.setText("Couldn't load trending lists — check connection and reopen Home.");
+                        }
+                    }
+                });
+    }
+
+    private View makeTrendingRow(String header, java.util.List<CatalogItem> items) {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(0, dp(6), 0, dp(14));
+
+        TextView h = new TextView(this);
+        h.setText(header);
+        h.setTextSize(24);
+        h.setTextColor(Color.WHITE);
+        h.setPadding(0, 0, 0, dp(8));
+        col.addView(h);
+
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        for (CatalogItem it : items) {
+            strip.addView(makeTrendingCard(it));
+        }
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        hsv.setHorizontalScrollBarEnabled(false);
+        hsv.addView(strip);
+        col.addView(hsv);
+        return col;
+    }
+
+    /** Trending card (v1.4.0): rows contain only resolved items,
+     *  so cards carry real Cinemeta/TMDB ids and open Details
+     *  directly. Focus behavior is identical, including the hero
+     *  follow. */
+    private View makeTrendingCard(final CatalogItem item) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        int w = dp(110);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                w, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, 0, dp(10), 0);
+        card.setLayoutParams(lp);
+        card.setFocusable(true);
+        card.setClickable(true);
+        card.setPadding(dp(4), dp(4), dp(4), dp(4));
+
+        ImageView poster = new ImageView(this);
+        poster.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(160)));
+        poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        poster.setBackgroundColor(Color.parseColor("#23262B"));
+        card.addView(poster);
+
+        final TextView name = new TextView(this);
+        name.setText(item.name);
+        name.setTextColor(Color.LTGRAY);
+        name.setMaxLines(2);
+        name.setPadding(0, dp(6), 0, 0);
+        card.addView(name);
+
+        card.setOnFocusChangeListener((v, hasFocus) -> {
+            v.setScaleX(hasFocus ? 1.08f : 1.0f);
+            v.setScaleY(hasFocus ? 1.08f : 1.0f);
+            v.setBackgroundColor(hasFocus ? Color.parseColor("#2A4A5A") : Color.TRANSPARENT);
+            name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
+            if (hasFocus) {
+                updateInfo(item.name);
+                updateHero(item);
+            }
+        });
+        card.setOnClickListener(v -> openTrendingItem(item));
+        loadPoster(item.poster, poster);
+        return card;
+    }
+
+    /** Resolve a trending title to a Cinemeta entry, then Details.
+     *  Season/format suffixes are stripped for the query (Cinemeta
+     *  search matches the bare title better); the row's type is tried
+     *  first, then the other type. */
+    private void openTrendingItem(final CatalogItem item) {
+        // v1.3.0: a synced item already carries a real Cinemeta id,
+        // so it opens Details directly instead of searching again.
+        if (item.id != null && !item.id.startsWith("trending_")) {
+            Intent i = new Intent(MainActivity.this, DetailsActivity.class);
+            i.putExtra("id", item.id);
+            i.putExtra("type", item.type);
+            startActivity(i);
+            return;
+        }
+        String q = item.name;
+        q = q.replaceAll(":\\s*Season\\s*\\d+\\s*$", "");
+        q = q.replaceAll(":\\s*Limited Series\\s*$", "");
+        q = q.trim();
+        final String query = q;
+        try {
+            final String extra = "search=" + java.net.URLEncoder.encode(query, "UTF-8");
+            final String firstType = item.type;
+            final String secondType = "series".equals(firstType) ? "movie" : "series";
+            mgr.catalogExtra(AddonManager.DEFAULT_ADDON, firstType, "top", extra,
+                    new AddonManager.Callback<java.util.List<CatalogItem>>() {
+                        @Override
+                        public void onResult(java.util.List<CatalogItem> items) {
+                            if (items != null && !items.isEmpty()) {
+                                openDetails(items.get(0));
+                            } else {
+                                searchOtherType();
+                            }
+                        }
+
+                        @Override
+                        public void onError(Exception e) {
+                            searchOtherType();
+                        }
+
+                        private void searchOtherType() {
+                            mgr.catalogExtra(AddonManager.DEFAULT_ADDON, secondType, "top", extra,
+                                    new AddonManager.Callback<java.util.List<CatalogItem>>() {
+                                        @Override
+                                        public void onResult(java.util.List<CatalogItem> items) {
+                                            if (items != null && !items.isEmpty()) {
+                                                openDetails(items.get(0));
+                                            } else {
+                                                Toast.makeText(MainActivity.this,
+                                                        "Not in catalog: " + query,
+                                                        Toast.LENGTH_LONG).show();
+                                            }
+                                        }
+
+                                        @Override
+                                        public void onError(Exception e) {
+                                            Toast.makeText(MainActivity.this,
+                                                    "Not in catalog: " + query,
+                                                    Toast.LENGTH_LONG).show();
+                                        }
+                                    });
+                        }
+
+                        private void openDetails(CatalogItem found) {
+                            Intent i = new Intent(MainActivity.this, DetailsActivity.class);
+                            i.putExtra("id", found.id);
+                            i.putExtra("type", found.type);
+                            startActivity(i);
+                        }
+                    });
+        } catch (Exception e) {
+            Toast.makeText(this, "Not in catalog: " + query, Toast.LENGTH_LONG).show();
+        }
+    }
+
     /** Adaptive hero banner (v0.10.2): created once, content follows focus.
      *  Backdrop, title, meta line and description are stored in fields so
      *  updateHero() can swap them without rebuilding the view. */
@@ -1086,11 +1297,17 @@ public class MainActivity extends Activity {
         heroDesc.setEllipsize(android.text.TextUtils.TruncateAt.END);
         text.addView(heroDesc);
 
-        // Click opens details for whichever title the banner shows now
+        // Click opens details for whichever title the banner shows now.
+        // v1.2.0: a trending hero item has a synthetic id, so it goes
+        // through the title-search path like a trending card click.
         hero.setFocusable(true);
         hero.setClickable(true);
         hero.setOnClickListener(v -> {
             if (heroItem == null) return;
+            if (heroItem.id != null && heroItem.id.startsWith("trending_")) {
+                openTrendingItem(heroItem);
+                return;
+            }
             Intent i = new Intent(MainActivity.this, DetailsActivity.class);
             i.putExtra("id", heroItem.id);
             i.putExtra("type", heroItem.type);
@@ -1106,11 +1323,21 @@ public class MainActivity extends Activity {
      * genres, rating, backdrop and episode count. Cached meta applies
      * instantly. Stale /meta replies (focus moved on) are dropped.
      */
-    /** Bare id for a meta lookup: episode ids "tt123:1:2" -> "tt123". */
+    /** Bare id for a meta lookup: episode ids "tt123:1:2" -> "tt123".
+     *  v1.3.1: a TMDB id ("tmdb:293607") keeps its prefix — splitting
+     *  on ':' would leave "tmdb" and every meta lookup would fail. */
     private static String heroBaseId(String id) {
         if (id == null) return "";
+        if (id.startsWith("tmdb:")) return id;
         int c = id.indexOf(':');
         return c >= 0 ? id.substring(0, c) : id;
+    }
+
+    /** Meta source for an id: TMDB-addon ids come from the TMDB
+     *  addon, everything else from Cinemeta (v1.3.1). */
+    private static String metaAddonFor(String id) {
+        return id != null && id.startsWith("tmdb:")
+                ? AddonManager.TMDB_ADDON : AddonManager.DEFAULT_ADDON;
     }
 
     /** Disk-persistent hero meta cache (SharedPreferences, JSON per id). */
@@ -1206,7 +1433,7 @@ public class MainActivity extends Activity {
             // the banner and both caches update. A failed refresh
             // is silent — the cached banner is better than blank.
             final com.patrisius.cahaya.addon.MetaDetails shown = cached;
-            mgr.meta(AddonManager.DEFAULT_ADDON, item.type, metaId,
+            mgr.meta(metaAddonFor(item.id), item.type, metaId,
                     new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
                         @Override
                         public void onResult(com.patrisius.cahaya.addon.MetaDetails d) {
@@ -1226,7 +1453,7 @@ public class MainActivity extends Activity {
             return;
         }
         heroDesc.setText("Loading info…");
-        mgr.meta(AddonManager.DEFAULT_ADDON, item.type, metaId,
+        mgr.meta(metaAddonFor(item.id), item.type, metaId,
                 new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
                     @Override
                     public void onResult(com.patrisius.cahaya.addon.MetaDetails d) {
@@ -1609,6 +1836,16 @@ public class MainActivity extends Activity {
             }
         });
         card.setOnClickListener(v -> {
+            // v1.1.2: a click on a Search-tab result records the query
+            // exactly as typed at click time — even an incomplete word.
+            // Home rows never reach this branch (selected != 1 there).
+            if (selected == 1 && searchInput != null) {
+                String q = searchInput.getText().toString().trim();
+                if (!q.isEmpty()) {
+                    saveSearchQuery(q);
+                    if (refreshSearchHistory != null) refreshSearchHistory.run();
+                }
+            }
             Intent i = new Intent(MainActivity.this, DetailsActivity.class);
             i.putExtra("id", item.id);
             i.putExtra("type", item.type);
@@ -1620,6 +1857,12 @@ public class MainActivity extends Activity {
     }
 
     // ---------------- Search ----------------
+
+    /** v1.1.2: the Search tab's live input + history refresher, kept so
+     *  a result-card click can record whatever is typed at click time
+     *  (even a partial word). Only meaningful while selected == 1. */
+    private android.widget.EditText searchInput;
+    private Runnable refreshSearchHistory;
 
     /** Search history (v1.1.1): last 10 queries, most recent first,
      *  in SharedPreferences as a JSON array. */
@@ -1663,6 +1906,7 @@ public class MainActivity extends Activity {
         bar.setOrientation(LinearLayout.HORIZONTAL);
 
         final EditText input = new EditText(this);
+        searchInput = input;
         input.setHint("Search movies and series…");
         input.setHintTextColor(Color.GRAY);
         input.setTextColor(Color.WHITE);
@@ -1844,6 +2088,7 @@ public class MainActivity extends Activity {
                 historyRow.addView(chip, clp);
             }
         };
+        refreshSearchHistory = rebuildHistoryRef[0];
         rebuildHistoryRef[0].run();
         go.setOnClickListener(v -> {
             main.removeCallbacks(liveSearch);
@@ -2283,7 +2528,7 @@ public class MainActivity extends Activity {
         col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        addSettingRow(col, "Version", "1.1.1 (build 61)");
+        addSettingRow(col, "Version", "1.4.0 (build 67)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");

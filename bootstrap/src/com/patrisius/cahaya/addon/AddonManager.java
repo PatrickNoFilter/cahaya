@@ -28,6 +28,9 @@ public class AddonManager {
 
     /** Default addon installed on first run. */
     public static final String DEFAULT_ADDON = "https://v3-cinemeta.strem.io";
+    /** Alternative metadata source for titles Cinemeta lacks (v1.3.1):
+     *  supports title search (tmdb.search catalogs) + /meta. */
+    public static final String TMDB_ADDON = "https://tmdb.elfhosted.com";
     /** Nuvio TMDB catalog addon: the only built-in source with
      *  movies/series-by-language catalogs (Japanese, Korean, Chinese). */
     public static final String NUVIO_CATALOG = "https://catalog.nuvio.tv";
