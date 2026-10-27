@@ -229,7 +229,9 @@ public class MainActivity extends Activity {
         // No top name bar anymore (v0.10.7): the adaptive banner is the
         // title now, so content starts at the very top and gains 64dp.
         content = new FrameLayout(this);
-        content.setPadding(dp(28), dp(8), dp(28), dp(28));
+        // v1.5.6: no gap between the sidebar and the body — the
+        // body's left padding is 0 in both sidebar states.
+        content.setPadding(0, dp(8), dp(28), dp(28));
         contentCol.addView(content, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -315,11 +317,11 @@ public class MainActivity extends Activity {
         sidebarExpanded = expanded;
         int from = sidebar.getWidth();
         // v1.0.1: folded rail 76 -> 56dp (icons are 40dp, still fit
-        // with margin) and body left padding 28 -> 16dp while folded,
-        // so the body sits closer to the rail and looks balanced.
+        // with margin). v1.5.6: body left padding is 0 in both
+        // states — no gap between the sidebar and the body.
         int to = dp(expanded ? 280 : 56);
         if (content != null) {
-            content.setPadding(dp(expanded ? 28 : 16), dp(8), dp(28), dp(28));
+            content.setPadding(0, dp(8), dp(28), dp(28));
         }
         ValueAnimator anim = ValueAnimator.ofInt(from, to);
         anim.setDuration(220);
@@ -548,11 +550,19 @@ public class MainActivity extends Activity {
 
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
+        // v1.6.1: vertical breathing room + no clipping, so a
+        // focused card's scaled gold frame (up to ~9dp overflow
+        // per side at 1.08x) is never cut at the top or bottom.
+        // The strip height follows the tallest card, so the frame
+        // adapts to each card's content + title lines.
+        strip.setPadding(0, dp(12), 0, dp(12));
+        strip.setClipChildren(false);
         for (ContinueWatching.Item it : items) {
             strip.addView(makeContinueCard(it));
         }
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
+        hsv.setClipChildren(false);
         hsv.addView(strip);
         col.addView(hsv);
 
@@ -560,6 +570,42 @@ public class MainActivity extends Activity {
         // Hero is pinned above the scroll area now, so Continue Watching
         // is simply the first scrollable row.
         homeRows.addView(col, 0);
+    }
+
+    /** Gold selection border (v1.6.3), drawn as the card's
+     *  FOREGROUND: foreground draws above children, so no
+     *  thumbnail or padding interaction can ever eat one edge
+     *  again — the 1.6.0 background-drawable frame lost its top
+     *  edge on the box despite the 1.6.1 padding + clipChildren
+     *  fixes. The stroke is inset by half its width so it stays
+     *  fully inside the card bounds. The card's scale + title-
+     *  color cues stay. */
+    private static class GoldBorderDrawable extends android.graphics.drawable.Drawable {
+        private final android.graphics.Paint paint;
+        private final float stroke, radius;
+        GoldBorderDrawable(float strokePx, float radiusPx) {
+            stroke = strokePx;
+            radius = radiusPx;
+            paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(stroke);
+            paint.setColor(android.graphics.Color.parseColor("#E8A33D"));
+        }
+        @Override public void draw(android.graphics.Canvas canvas) {
+            android.graphics.Rect b = getBounds();
+            float i = stroke / 2f;
+            canvas.drawRoundRect(b.left + i, b.top + i, b.right - i, b.bottom - i, radius, radius, paint);
+        }
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(android.graphics.ColorFilter cf) { paint.setColorFilter(cf); }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    /** Frame application (v1.6.3): the fill stays the background,
+     *  the gold border is the foreground (complete on all sides). */
+    private void applyCardFrame(android.view.View v, boolean focused, int fillColor) {
+        v.setBackgroundColor(focused ? fillColor : Color.TRANSPARENT);
+        v.setForeground(focused ? new GoldBorderDrawable(dp(3), dp(8)) : null);
     }
 
     private View makeContinueCard(ContinueWatching.Item it) {
@@ -635,6 +681,7 @@ public class MainActivity extends Activity {
         card.setOnFocusChangeListener((v, hasFocus) -> {
             v.setScaleX(hasFocus ? 1.05f : 1.0f);
             v.setScaleY(hasFocus ? 1.05f : 1.0f);
+            applyCardFrame(v, hasFocus, Color.TRANSPARENT);
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
             if (hasFocus) {
                 updateInfo(it.title);
@@ -1095,11 +1142,19 @@ public class MainActivity extends Activity {
 
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
+        // v1.6.1: vertical breathing room + no clipping, so a
+        // focused card's scaled gold frame (up to ~9dp overflow
+        // per side at 1.08x) is never cut at the top or bottom.
+        // The strip height follows the tallest card, so the frame
+        // adapts to each card's content + title lines.
+        strip.setPadding(0, dp(12), 0, dp(12));
+        strip.setClipChildren(false);
         for (CatalogItem it : items) {
             strip.addView(makeTrendingCard(it));
         }
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
+        hsv.setClipChildren(false);
         hsv.addView(strip);
         col.addView(hsv);
         return col;
@@ -1137,7 +1192,7 @@ public class MainActivity extends Activity {
         card.setOnFocusChangeListener((v, hasFocus) -> {
             v.setScaleX(hasFocus ? 1.08f : 1.0f);
             v.setScaleY(hasFocus ? 1.08f : 1.0f);
-            v.setBackgroundColor(hasFocus ? Color.parseColor("#2A4A5A") : Color.TRANSPARENT);
+            applyCardFrame(v, hasFocus, Color.parseColor("#2A4A5A"));
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
             if (hasFocus) {
                 updateInfo(item.name);
@@ -1512,11 +1567,19 @@ public class MainActivity extends Activity {
 
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
+        // v1.6.1: vertical breathing room + no clipping, so a
+        // focused card's scaled gold frame (up to ~9dp overflow
+        // per side at 1.08x) is never cut at the top or bottom.
+        // The strip height follows the tallest card, so the frame
+        // adapts to each card's content + title lines.
+        strip.setPadding(0, dp(12), 0, dp(12));
+        strip.setClipChildren(false);
         for (CatalogItem it : items) {
             strip.addView(makeCard(it));
         }
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
+        hsv.setClipChildren(false);
         hsv.addView(strip);
         col.addView(hsv);
         return col;
@@ -1821,7 +1884,7 @@ public class MainActivity extends Activity {
         card.setOnFocusChangeListener((v, hasFocus) -> {
             v.setScaleX(hasFocus ? 1.08f : 1.0f);
             v.setScaleY(hasFocus ? 1.08f : 1.0f);
-            v.setBackgroundColor(hasFocus ? Color.parseColor("#2A4A5A") : Color.TRANSPARENT);
+            applyCardFrame(v, hasFocus, Color.parseColor("#2A4A5A"));
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
             if (hasFocus) {
                 updateInfo(item.name);
@@ -2521,7 +2584,7 @@ public class MainActivity extends Activity {
         col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        addSettingRow(col, "Version", "1.5.5 (build 73)");
+        addSettingRow(col, "Version", "1.6.3 (build 80)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");

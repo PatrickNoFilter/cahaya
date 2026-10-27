@@ -146,7 +146,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private volatile boolean loggedMpvText;
     private boolean subsLoading, onlineExpanded, autoSubDone;
     private int selectedAudioId = -2; // -2 = unknown (read from mpv), else track id
+    private String previousAid = null; // aid playing before the current pick (restore target)
+    private int audioVerifyPass = 0;
     private int subDelayMs, aspectMode, speedIdx = 2;
+    private double videoAspect = 0; // from video-params; 0 = unknown
 
     private final Runnable hideController = this::hideControllerNow;
     private final Runnable hideHint = () -> hintView.setVisibility(View.GONE);
@@ -547,6 +550,8 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                     .append(t.isImage() ? " IMAGE" : " text").append(t.forced ? " forced" : "")
                     .append(t.external ? " external" : "").append(t.selected ? " <selected by mpv>" : "");
         diag("file loaded; preferred=" + prefs.preferredLang + dump);
+        readVideoAspect();
+        applyAspect();
         if (startPos > 5) seekAbs(startPos);
         if (subDelayMs != 0) try { MPVLib.setPropertyDouble("sub-delay", subDelayMs / 1000.0); } catch (Throwable ignored) {}
         showController();
@@ -888,11 +893,88 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void cycleAspect() {
         aspectMode = (aspectMode + 1) % ASPECT_NAMES.length;
         try {
+            // v1.6.0: mpv props mirror the swapped layout modes
+            // (ignored by mediacodec_embed, but kept consistent).
             MPVLib.setPropertyDouble("panscan", aspectMode == 1 ? 1.0 : 0.0);
-            MPVLib.setPropertyBoolean("keepaspect", aspectMode != 2);
+            MPVLib.setPropertyBoolean("keepaspect", aspectMode != 0);
         } catch (Throwable ignored) {}
+        applyAspect();
         hint("Aspect: " + ASPECT_NAMES[aspectMode]);
         scheduleHide();
+    }
+
+    /** Aspect modes that actually work with vo=mediacodec_embed.
+     *  mpv accepts panscan/keepaspect (mpv.log shows "-> 1") but the
+     *  MediaCodec path renders straight to the Surface, so the
+     *  Android compositor scales each frame to the SurfaceView size
+     *  and mpv's aspect properties have no visible effect. So the
+     *  modes are implemented here, by resizing the SurfaceView:
+     *  Fit = fill the screen, Zoom = fill the screen and crop
+     *  the overflow, Stretch = whole video visible (v1.6.0: Fit
+     *  and Stretch swapped per his correction). Resizing
+     *  the view does not destroy the Surface (only surfaceChanged
+     *  fires, which is a no-op), so playback continues untouched. */
+    private void readVideoAspect() {
+        // v1.6.0: the NUMERIC getters are unreliable for
+        // video-params — the aspect double returned 1.95E-110
+        // garbage, and the w/h ints gave 0.96 then 1.08 for a
+        // 1920x1080 video (decoder-confirmed 1.78). The STRING
+        // getter is the proven-reliable path (aid and the
+        // track-list fields read correctly through it), so every
+        // candidate is read as text and parsed, each validated
+        // against the sane range before it is trusted.
+        videoAspect = 0;
+        String[] props = {"video-out-params/aspect", "video-params/aspect"};
+        for (String p : props) {
+            try {
+                double v = Double.parseDouble(MPVLib.getPropertyString(p));
+                if (v > 0.2 && v < 5.0) { videoAspect = v; return; }
+            } catch (Throwable ignored) {}
+        }
+        String[][] wh = {{"video-out-params/w", "video-out-params/h"},
+                         {"video-params/w", "video-params/h"}};
+        for (String[] pair : wh) {
+            try {
+                int w = Integer.parseInt(MPVLib.getPropertyString(pair[0]));
+                int h = Integer.parseInt(MPVLib.getPropertyString(pair[1]));
+                if (w > 0 && h > 0) { videoAspect = (double) w / h; return; }
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    private void applyAspect() {
+        if (surfaceView == null) return;
+        FrameLayout.LayoutParams lp =
+                (FrameLayout.LayoutParams) surfaceView.getLayoutParams();
+        int sw = getResources().getDisplayMetrics().widthPixels;
+        int sh = getResources().getDisplayMetrics().heightPixels;
+        // v1.6.0: Fit and Stretch swapped per his correction —
+        // Fit now fills the screen (old Stretch), Stretch now
+        // shows the whole video with bars (old Fit). Zoom
+        // unchanged. A garbage/unknown aspect still falls back
+        // to fill, so the surface can never again size to 0
+        // wide (Fit went black) or MAXINT tall.
+        if (aspectMode == 0 || videoAspect <= 0.2 || videoAspect >= 5.0) {
+            // Fit, or unknown/invalid video size: fill the screen.
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            lp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+        } else {
+            double screenAspect = (double) sw / sh;
+            int w, h;
+            if (aspectMode == 2) { // Stretch: whole video visible
+                if (videoAspect > screenAspect) { w = sw; h = (int) (sw / videoAspect); }
+                else { h = sh; w = (int) (sh * videoAspect); }
+            } else { // Zoom: fill the screen, crop the overflow
+                if (videoAspect > screenAspect) { h = sh; w = (int) (sh * videoAspect); }
+                else { w = sw; h = (int) (sw / videoAspect); }
+            }
+            lp.width = w;
+            lp.height = h;
+        }
+        lp.gravity = android.view.Gravity.CENTER;
+        surfaceView.setLayoutParams(lp);
+        // v1.5.7 diagnostic: persists in mpv.log (logcat rotates).
+        try { MPVLib.logMessage("CahayaAspect", 2, "mode=" + aspectMode + " videoAspect=" + videoAspect + " screen=" + sw + "x" + sh + " surface=" + lp.width + "x" + lp.height); } catch (Throwable ignored) {}
     }
 
     private void updateProgress() {
@@ -1485,6 +1567,53 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     // ---- audio / speed ---------------------------------------------------
 
+    /** Delayed audio-switch verification (see the click handler).
+     *  Runs 800ms after a pick: if mpv STILL reports no audio by
+     *  then, the pick genuinely failed and auto is the rescue. A
+     *  new file load resets selectedAudioId to -2, which skips
+     *  this check so it can never clobber a fresh stream. */
+    private final Runnable verifyAudio = () -> {
+        // v1.6.0: verify, then RESTORE — never auto, never mute.
+        // mpv.log 2026-10-27 proved the failure mode: the panel
+        // offered id 113 while the file's only audio track is
+        // aid=3, so setting 113 deselected the working track and
+        // aid stayed "no" forever. Any pick that leaves aid at
+        // "no" after 800ms gets one more check at 3.8s (slow
+        // torrent switches need time); if it still fails, the
+        // track playing before the click is restored, so a bad
+        // option can never leave the user muted.
+        if (selectedAudioId < 0) return;
+        try {
+            String a = MPVLib.getPropertyString("aid");
+            diagAudio("verify: aid=" + a + " pass=" + audioVerifyPass);
+            try { MPVLib.logMessage("CahayaAudioVerify", 2, "aid=" + a + " selected=" + selectedAudioId + " pass=" + audioVerifyPass); } catch (Throwable ignored) {}
+            if (("no".equals(a) || "-1".equals(a)) && audioVerifyPass == 0) {
+                audioVerifyPass = 1;
+                scheduleVerifyAudio(3000);
+            } else if ("no".equals(a) || "-1".equals(a)) {
+                if (previousAid != null && !previousAid.isEmpty() && !"?".equals(previousAid) && !"no".equals(previousAid)) {
+                    try {
+                        MPVLib.setPropertyString("aid", previousAid);
+                        String back = MPVLib.getPropertyString("aid");
+                        try { selectedAudioId = Integer.parseInt(back); }
+                        catch (Throwable ignored) { try { selectedAudioId = Integer.parseInt(previousAid); } catch (Throwable ignored2) {} }
+                    } catch (Throwable ignored) {}
+                    hint("Audio track unavailable, restored previous");
+                } else {
+                    hint("Audio track unavailable, pick another");
+                }
+                schedulePanelRefresh();
+            }
+        } catch (Throwable ignored) {}
+    };
+
+    /** Posts the audio verify runnable (a method, so the
+     *  runnable's own initializer never self-references it —
+     *  javac rejects that). */
+    private void scheduleVerifyAudio(long delay) {
+        main.postDelayed(verifyAudio, delay);
+    }
+
     private void buildAudioPanel() {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
         panel.begin("Audio");
@@ -1493,6 +1622,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         for (MpvTrack t : tracks) {
             diagAudio("  track id=" + t.id + " lang=" + t.lang + " codec=" + t.codec);
         }
+        try {
+            StringBuilder lb = new StringBuilder("panel open: " + tracks.size() + " tracks, current aid=" + getAidSafe());
+            for (MpvTrack t : tracks) lb.append(" | id=").append(t.id).append(" lang=").append(t.lang).append(" codec=").append(t.codec);
+            MPVLib.logMessage("CahayaAudioPanel", 2, lb.toString());
+        } catch (Throwable ignored) {}
         if (tracks.isEmpty()) {
             panel.note("No audio tracks reported yet.");
         }
@@ -1500,49 +1634,75 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         if (selectedAudioId >= 0) {
             for (MpvTrack t : tracks) t.selected = (t.id == selectedAudioId);
         }
-        for (final MpvTrack t : tracks) {
+        for (int ai = 0; ai < tracks.size(); ai++) {
+            final MpvTrack t = tracks.get(ai);
             // TV-friendly label: Language · Title (e.g. "English · GalaxyTV")
             // Note: channel count from demux-channel-count is unreliable (returns garbage like 97),
             // so we don't display it. Codec is shown.
-            String lang = (t.lang != null && !t.lang.isEmpty()) ? LangUtil.display(t.lang) : "Unknown";
-            String label = lang;
-            if (t.title != null && !t.title.isEmpty() && !t.title.equalsIgnoreCase(lang)
-                    && !t.title.equalsIgnoreCase(t.lang)) {
-                label += " · " + t.title;
+            // A track with neither language nor title is "Audio N"
+            // (position, not the mpv id) — never "Unknown".
+            String label = t.label();
+            if ((t.lang == null || LangUtil.canonical(t.lang).isEmpty())
+                    && (t.title == null || t.title.isEmpty())) {
+                label = "Audio " + (ai + 1);
             }
             String detail = (t.codec != null && !t.codec.isEmpty()) ? t.codec.toUpperCase() : "";
             if (t.isDefault) detail += (detail.isEmpty() ? "" : " · ") + "Default";
             final String fLabel = label;
             final String fLang = t.lang;
             final String fCodec = t.codec;
+            final int fId = t.id;
             panel.row(label, detail, t.selected, () -> {
-                // Re-read tracks to get fresh ID (IDs can shift); match by lang+codec
+                // Re-read tracks to get fresh ID. Prefer the row's
+                // own id when the fresh list still carries it (most
+                // faithful to the option clicked, and immune to
+                // duplicate lang+codec tracks); then lang+codec.
                 List<MpvTrack> fresh = MpvTrack.read("audio");
                 int useId = -1;
                 for (MpvTrack ft : fresh) {
-                    if (eq(ft.lang, fLang) && eq(ft.codec, fCodec)) { useId = ft.id; break; }
+                    if (ft.id == fId) { useId = ft.id; break; }
+                }
+                if (useId < 0) {
+                    for (MpvTrack ft : fresh) {
+                        if (eq(ft.lang, fLang) && eq(ft.codec, fCodec)) { useId = ft.id; break; }
+                    }
                 }
                 if (useId < 0 && !fresh.isEmpty()) useId = fresh.get(0).id; // fallback
                 diagAudio("user select lang=" + fLang + " codec=" + fCodec + " -> fresh id=" + useId);
+                if (useId < 0) {
+                    // No audio track readable right now (track-list not
+                    // populated yet): do NOT touch aid — setting
+                    // aid=-1 disables audio, and the read-back is
+                    // "-1" rather than "no", so the auto fallback
+                    // below would never fire and the sound goes off
+                    // and stays off.
+                    diagAudio("no fresh id, leaving aid untouched");
+                    hint("Audio tracks not ready yet");
+                    return;
+                }
                 try {
-                    // Try specific ID first, fall back to auto if mpv rejects it
-                    // (track IDs can be unstable on some streams)
+                    // v1.5.7: do NOT read aid back immediately. mpv
+                    // switches audio tracks asynchronously (AO re-init);
+                    // the immediate read-back returns "no" while the
+                    // switch is still in flight, and the old code then
+                    // set aid=auto — clobbering the user's pick before
+                    // it ever played (mpv.log 2026-10-27: every click
+                    // shows aid=<id> followed at once by aid=auto).
+                    // Trust the set (it logs "-> 1" on success) and
+                    // verify only after the switch has had time to land.
+                    previousAid = getAidSafe();
+                    audioVerifyPass = 0;
                     MPVLib.setPropertyString("aid", String.valueOf(useId));
-                    String actualAid = MPVLib.getPropertyString("aid");
-                    if ("no".equals(actualAid)) {
-                        diagAudio("ID rejected, trying aid=auto");
-                        MPVLib.setPropertyString("aid", "auto");
-                        actualAid = MPVLib.getPropertyString("aid");
-                    }
-                    String aCodec = MPVLib.getPropertyString("audio-codec-name");
-                    diagAudio("after select: aid=" + actualAid + " audio-codec=" + aCodec);
-                    if ("no".equals(actualAid)) {
-                        diagAudio("WARNING: mpv has no audio (aid=no)");
-                    }
+                    diagAudio("set aid=" + useId + " from=" + previousAid + " (verify 800ms/3.8s, restore on failure)");
+                    try { MPVLib.logMessage("CahayaAudio", 2, "set aid=" + useId + " from=" + previousAid + " label=" + fLabel + " codec=" + fCodec); } catch (Throwable ignored) {}
+                    selectedAudioId = useId;
+                    main.removeCallbacks(verifyAudio);
+                    main.postDelayed(verifyAudio, 800);
                 } catch (Throwable e) {
                     diagAudio("select failed: " + e);
+                    hint("Audio switch failed");
+                    return;
                 }
-                selectedAudioId = useId;
                 hint("Audio: " + fLabel);
                 schedulePanelRefresh();
             });
@@ -1605,7 +1765,8 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         }
     }
     @Override public void event(int eventId) {
-        if (eventId == 8) main.post(this::onFileLoaded);          // MPV_EVENT_FILE_LOADED
+        if (eventId == 17) main.post(() -> { readVideoAspect(); applyAspect(); }); // VIDEO_RECONFIG
+        else if (eventId == 8) main.post(this::onFileLoaded);          // MPV_EVENT_FILE_LOADED
         // MPV_EVENT_END_FILE — v1.5.3: ignored while a Next switch is
         // in flight, otherwise the outgoing file's end event finishes
         // the player right after the user picks the next stream.

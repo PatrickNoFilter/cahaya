@@ -25,7 +25,9 @@ public class MpvTrack {
 
     /** Main line of a picker row: "English", plus the title when it adds information. */
     public String label() {
-        String name = (lang == null || lang.isEmpty()) ? null : LangUtil.display(lang);
+        // "und"/"unk"/null/empty are all "no language": fall through
+        // to the title, then to the caller's positional fallback.
+        String name = (lang == null || LangUtil.canonical(lang).isEmpty()) ? null : LangUtil.display(lang);
         if (name == null) return (title != null && !title.isEmpty()) ? title : ("Track " + id);
         if (title != null && !title.isEmpty() && !title.equalsIgnoreCase(name)
                 && !title.equalsIgnoreCase(lang)) return name + " · " + title;

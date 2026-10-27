@@ -9,7 +9,7 @@ Nuvio and CloudStream — with support for community addons and plugins.
 
 ## Releases
 
-Current version: **1.5.5** (build 73). Release APKs are published on the
+Current version: **1.6.3** (build 80). Release APKs are published on the
 [Releases page](https://github.com/PatrickNoFilter/cahaya/releases) — one
 release per version, each carrying its own APK.
 
@@ -19,6 +19,34 @@ torrent engine. No Play Store release yet.
 
 ### Changelog
 
+- **1.6.3** — Golden frame redrawn as the card's foreground (above all
+  children), so no edge can be eaten by thumbnail or padding
+  interaction; audio panel labels a track with neither language nor
+  title as "Audio N" (position, not mpv id) instead of "Unknown".
+- **1.6.2** — Card strips get vertical breathing room and no clipping,
+  so a focused card's scaled gold frame is never cut at the top or
+  bottom (includes the 1.6.1 padding fix, which never shipped on its
+  own); player log now appends across sessions instead of overwriting
+  each player start; audio click prefers the row's own track id when
+  the fresh track list still carries it.
+- **1.6.0** — Audio: a failed track pick restores the previously
+  playing track instead of muting (with a second check at 3.8 s for
+  slow torrent switches); aspect Fit/Stretch swapped per correction
+  and aspect read via string properties; golden frame on focused body
+  cards (Playing History, trending, search).
+- **1.5.8** — Aspect values accepted only in the sane 0.2–5.0 range
+  (garbage numeric reads could size the surface 0 px wide = black
+  picture); audio auto-fallback removed — a failed pick only logs and
+  hints, never mutes.
+- **1.5.7** — Audio: the pick is trusted on set and verified 800 ms
+  later instead of read back immediately (mpv switches tracks
+  asynchronously, so the immediate read always saw "no" and clobbered
+  the pick); aspect diagnostics logged to the player log.
+- **1.5.6** — Sidebar/body gap deleted (body padding 0 in both sidebar
+  states); audio mute guard: no readable track id leaves the current
+  track untouched instead of disabling audio; aspect applied by
+  resizing the SurfaceView (mpv aspect properties have no visible
+  effect on the mediacodec_embed surface).
 - **1.5.5** — Stream-picker columns are sized to their content (capped
   at an equal share) with exactly the same gap between every pair of
   columns; the row is centered, so leftover space splits equally to

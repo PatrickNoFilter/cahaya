@@ -98,12 +98,19 @@ public class MPVLib {
     // PlayerActivity sets this file; logMessage appends to it too.
     public static java.io.File logFile = null;
 
+    // v1.6.2: APPEND across sessions, so a later player start can
+    // never again overwrite the log of the session the user just
+    // tested (every 1.6.0 audio/aspect report arrived with its
+    // evidence already overwritten). A separator marks each
+    // session; over 512KB the file restarts from scratch.
     public static void setLogFile(java.io.File f) {
         logFile = f;
         if (f != null) {
             try {
-                java.io.FileWriter w = new java.io.FileWriter(f, false);
-                w.write("mpv log start\n");
+                boolean over = f.exists() && f.length() > 512 * 1024;
+                java.io.FileWriter w = new java.io.FileWriter(f, !over);
+                if (over) w.write("mpv log start (previous log over 512KB, truncated)\n");
+                else w.write("=== session start " + new java.util.Date() + " ===\n");
                 w.close();
             } catch (Exception ignored) { }
         }
