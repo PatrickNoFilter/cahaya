@@ -9,7 +9,7 @@ Nuvio and CloudStream — with support for community addons and plugins.
 
 ## Releases
 
-Current version: **1.6.3** (build 80). Release APKs are published on the
+Current version: **1.6.4** (build 81). Release APKs are published on the
 [Releases page](https://github.com/PatrickNoFilter/cahaya/releases) — one
 release per version, each carrying its own APK.
 
@@ -19,6 +19,11 @@ torrent engine. No Play Store release yet.
 
 ### Changelog
 
+- **1.6.4** — Frame clip chain completed: every ancestor of a card
+  strip no longer clips, and strips are padded 12dp on all sides, so
+  the first/last cards' frames are complete too (row titles inset to
+  match); track lists are now read entirely through mpv's string
+  getter, since the numeric/boolean getters return garbage ids.
 - **1.6.3** — Golden frame redrawn as the card's foreground (above all
   children), so no edge can be eaten by thumbnail or padding
   interaction; audio panel labels a track with neither language nor

@@ -62,25 +62,50 @@ public class MpvTrack {
         }
     }
 
+    // The numeric/boolean JNI getters in this libplayer build return
+    // garbage (track ids like 97/113/121, track-list/count of 121 for a
+    // 36-track file, random booleans). Only the STRING getter is reliable,
+    // so every field is read as text and parsed here.
+    private static int intProp(String name, int def) {
+        try {
+            String v = MPVLib.getPropertyString(name);
+            if (v == null) return def;
+            return Integer.parseInt(v.trim());
+        } catch (Throwable t) { return def; }
+    }
+
+    private static boolean boolProp(String name) {
+        try {
+            String v = MPVLib.getPropertyString(name);
+            return "yes".equals(v) || "true".equals(v) || "1".equals(v);
+        } catch (Throwable t) { return false; }
+    }
+
     /** Read all tracks of one type ("audio" or "sub") from the running mpv. Never throws. */
     public static List<MpvTrack> read(String wantType) {
         List<MpvTrack> out = new ArrayList<>();
         try {
-            int n = MPVLib.getPropertyInt("track-list/count");
+            int n = intProp("track-list/count", 0);
             String sel = MPVLib.getPropertyString(wantType.equals("audio") ? "aid" : "sid");
             for (int i = 0; i < n; i++) {
                 String base = "track-list/" + i + "/";
-                if (!wantType.equals(MPVLib.getPropertyString(base + "type"))) continue;
+                String type = MPVLib.getPropertyString(base + "type");
+                // v1.6.4 amendment: continue, not break — a transient
+                // null mid-list must not truncate the tracks.
+                if (type == null) continue;
+                if (!wantType.equals(type)) continue;
+                int id = intProp(base + "id", -1);
+                if (id < 0) continue;
                 MpvTrack t = new MpvTrack();
                 t.type = wantType;
-                t.id = MPVLib.getPropertyInt(base + "id");
+                t.id = id;
                 t.lang = MPVLib.getPropertyString(base + "lang");
                 t.title = MPVLib.getPropertyString(base + "title");
                 t.codec = MPVLib.getPropertyString(base + "codec");
-                t.external = MPVLib.getPropertyBoolean(base + "external");
-                t.forced = MPVLib.getPropertyBoolean(base + "forced");
-                t.isDefault = MPVLib.getPropertyBoolean(base + "default");
-                if (wantType.equals("audio")) t.channels = MPVLib.getPropertyInt(base + "demux-channel-count");
+                t.external = boolProp(base + "external");
+                t.forced = boolProp(base + "forced");
+                t.isDefault = boolProp(base + "default");
+                if (wantType.equals("audio")) t.channels = intProp(base + "demux-channel-count", 0);
                 t.selected = sel != null && sel.equals(String.valueOf(t.id));
                 out.add(t);
             }

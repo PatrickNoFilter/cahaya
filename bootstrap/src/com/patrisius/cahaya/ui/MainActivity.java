@@ -484,8 +484,12 @@ public class MainActivity extends Activity {
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
+        scroll.setClipChildren(false);
+        scroll.setClipToPadding(false);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
+        col.setClipChildren(false);
+        col.setClipToPadding(false);
 
         homeStatus = new TextView(this);
         homeStatus.setText("Loading trending…");
@@ -494,6 +498,8 @@ public class MainActivity extends Activity {
 
         homeRows = new LinearLayout(this);
         homeRows.setOrientation(LinearLayout.VERTICAL);
+        homeRows.setClipChildren(false);
+        homeRows.setClipToPadding(false);
         col.addView(homeRows);
 
         scroll.addView(col, new ViewGroup.LayoutParams(
@@ -545,8 +551,12 @@ public class MainActivity extends Activity {
         h.setText("Playing History");
         h.setTextSize(24);
         h.setTextColor(Color.WHITE);
-        h.setPadding(0, 0, 0, dp(8));
+        h.setPadding(dp(12), 0, 0, dp(8));
         col.addView(h);
+        // v1.6.4: every ancestor of a card strip must not clip, or the
+        // focused card's scaled gold frame is cut at the row edges.
+        col.setClipChildren(false);
+        col.setClipToPadding(false);
 
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
@@ -555,7 +565,10 @@ public class MainActivity extends Activity {
         // per side at 1.08x) is never cut at the top or bottom.
         // The strip height follows the tallest card, so the frame
         // adapts to each card's content + title lines.
-        strip.setPadding(0, dp(12), 0, dp(12));
+        // v1.6.4: horizontal padding too (12dp > the ~8dp a 1.08x card
+        // overflows per side), so the first/last card's frame is complete.
+        strip.setPadding(dp(12), dp(12), dp(12), dp(12));
+        strip.setClipToPadding(false);
         strip.setClipChildren(false);
         for (ContinueWatching.Item it : items) {
             strip.addView(makeContinueCard(it));
@@ -563,6 +576,7 @@ public class MainActivity extends Activity {
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
         hsv.setClipChildren(false);
+        hsv.setClipToPadding(false);
         hsv.addView(strip);
         col.addView(hsv);
 
@@ -1137,8 +1151,12 @@ public class MainActivity extends Activity {
         h.setText(header);
         h.setTextSize(24);
         h.setTextColor(Color.WHITE);
-        h.setPadding(0, 0, 0, dp(8));
+        h.setPadding(dp(12), 0, 0, dp(8));
         col.addView(h);
+        // v1.6.4: every ancestor of a card strip must not clip, or the
+        // focused card's scaled gold frame is cut at the row edges.
+        col.setClipChildren(false);
+        col.setClipToPadding(false);
 
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
@@ -1147,7 +1165,10 @@ public class MainActivity extends Activity {
         // per side at 1.08x) is never cut at the top or bottom.
         // The strip height follows the tallest card, so the frame
         // adapts to each card's content + title lines.
-        strip.setPadding(0, dp(12), 0, dp(12));
+        // v1.6.4: horizontal padding too (12dp > the ~8dp a 1.08x card
+        // overflows per side), so the first/last card's frame is complete.
+        strip.setPadding(dp(12), dp(12), dp(12), dp(12));
+        strip.setClipToPadding(false);
         strip.setClipChildren(false);
         for (CatalogItem it : items) {
             strip.addView(makeTrendingCard(it));
@@ -1155,6 +1176,7 @@ public class MainActivity extends Activity {
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
         hsv.setClipChildren(false);
+        hsv.setClipToPadding(false);
         hsv.addView(strip);
         col.addView(hsv);
         return col;
@@ -1562,8 +1584,12 @@ public class MainActivity extends Activity {
         h.setText(header);
         h.setTextSize(24);
         h.setTextColor(Color.WHITE);
-        h.setPadding(0, 0, 0, dp(8));
+        h.setPadding(dp(12), 0, 0, dp(8));
         col.addView(h);
+        // v1.6.4: every ancestor of a card strip must not clip, or the
+        // focused card's scaled gold frame is cut at the row edges.
+        col.setClipChildren(false);
+        col.setClipToPadding(false);
 
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
@@ -1572,7 +1598,10 @@ public class MainActivity extends Activity {
         // per side at 1.08x) is never cut at the top or bottom.
         // The strip height follows the tallest card, so the frame
         // adapts to each card's content + title lines.
-        strip.setPadding(0, dp(12), 0, dp(12));
+        // v1.6.4: horizontal padding too (12dp > the ~8dp a 1.08x card
+        // overflows per side), so the first/last card's frame is complete.
+        strip.setPadding(dp(12), dp(12), dp(12), dp(12));
+        strip.setClipToPadding(false);
         strip.setClipChildren(false);
         for (CatalogItem it : items) {
             strip.addView(makeCard(it));
@@ -1580,6 +1609,7 @@ public class MainActivity extends Activity {
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
         hsv.setClipChildren(false);
+        hsv.setClipToPadding(false);
         hsv.addView(strip);
         col.addView(hsv);
         return col;
@@ -2584,7 +2614,7 @@ public class MainActivity extends Activity {
         col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        addSettingRow(col, "Version", "1.6.3 (build 80)");
+        addSettingRow(col, "Version", "1.6.4 (build 81)");
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
