@@ -33,7 +33,21 @@ import java.util.regex.Pattern;
  * Own trending lists (v1.2.0): merged from the keyless sources validated
  * by live crawling on 2026-10-26, instead of any single addon's catalog.
  *
- * Rows: korean, japanese, chinese, hollywood, hollywoodMovies.
+ * Rows: worldwide, korean, japanese, chinese, hollywood, hollywoodMovies.
+ * Worldwide (v1.9.0) is the streaming-combined row: Netflix's official
+ * global weekly charts (Tudum films / films-non-english / tv /
+ * tv-non-english) + Prime's official weekly worldwide Originals
+ * (films + series, combined lists only) + Disney+ via FlixPatrol's
+ * daily world chart (movies + TV) + Viu Indonesia via FlixPatrol
+ * (TV only). TMDB trending + IMDb were dropped from this row after
+ * the 2026-10-28 comparison: streaming lists measure actual watching,
+ * IMDb's moviemeter measures page-view curiosity (and bot-blocks
+ * direct fetches, so it often contributed nothing). Viu has no world
+ * chart anywhere, so it joins as a single Indonesia list — one vote,
+ * not one per Asian market. It takes every title as-is — the
+ * forced-row table does NOT apply to it, so a Korean show that is
+ * hot worldwide still charts here as well as at home. Hollywood rows
+ * still use TMDB trending + IMDb + Tudum US; only worldwide changed.
  *
  * Scoring: frequency first, then rank (Borda-style rank sum), with a
  * weekly bonus — a title on a weekly/current source outranks an
@@ -92,10 +106,10 @@ import java.util.regex.Pattern;
 public class TrendingEngine {
 
     public static final String[] ROW_KEYS = {
-            "korean", "japanese", "chinese", "hollywood", "hollywoodMovies"
+            "worldwide", "korean", "japanese", "chinese", "hollywood", "hollywoodMovies"
     };
     public static final String[] ROW_TITLES = {
-            "Trending Korean", "Trending Japanese", "Trending Chinese",
+            "Trending Worldwide", "Trending Korean", "Trending Japanese", "Trending Chinese",
             "Trending Hollywood", "Trending Hollywood Movies"
     };
 
@@ -313,6 +327,171 @@ public class TrendingEngine {
         return out;
     }
 
+    /** Unescape the few HTML entities that appear in chart titles. */
+    private static String unescape(String s) {
+        if (s == null) return "";
+        return s.replace("&amp;", "&").replace("&#x27;", "'")
+                .replace("&#39;", "'").replace("&quot;", "\"")
+                .replace("&lt;", "<").replace("&gt;", ">");
+    }
+
+    /** Tudum GLOBAL top-10 page for one category (films,
+     *  films-non-english, tv, tv-non-english) -> titles in chart
+     *  order, with posters. Same card pattern as the per-country
+     *  pages; verified 2026-10-28: each global page returns exactly
+     *  10 cards matching the published weekly views data. */
+    private static List<Entry> tudumGlobal(String category, int priority) {
+        List<Entry> out = new ArrayList<>();
+        try {
+            String body = fetch("https://www.netflix.com/tudum/top10/" + category);
+            Matcher m = TUDUM_CARD.matcher(body);
+            Set<String> seen = new HashSet<>();
+            while (m.find() && out.size() < 10) {
+                String alt = unescape(m.group(2));
+                if (alt.endsWith(": Limited Series")) {
+                    alt = alt.substring(0, alt.length() - ": Limited Series".length());
+                }
+                String key = normalize(alt);
+                if (key.isEmpty() || !seen.add(key)) continue;
+                out.add(new Entry(alt, m.group(1), priority));
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** Amazon's official weekly worldwide Prime Originals chart (one
+     *  article, updated weekly). kind = "films" or "series": parses
+     *  the combined English + non-English list under its h2 heading.
+     *  The separate non-English lists are deliberately NOT used —
+     *  they would double-count those titles. */
+    private static List<Entry> prime(String kind, int priority) {
+        List<Entry> out = new ArrayList<>();
+        try {
+            String body = fetch("https://www.aboutamazon.com/news/entertainment/prime-video-top-10-movies-shows");
+            String head = kind.equals("series")
+                    ? "Top 10 Prime Original series (English"
+                    : "Top 10 Prime Original films (English";
+            int h = body.indexOf(head);
+            if (h < 0) return out;
+            int ol = body.indexOf("<ol", h);
+            int end = body.indexOf("</ol>", ol);
+            if (ol < 0 || end < 0) return out;
+            String list = body.substring(ol, end);
+            Matcher m = Pattern.compile("<li[^>]*>([\\s\\S]*?)</li>").matcher(list);
+            Set<String> seen = new HashSet<>();
+            while (m.find() && out.size() < 10) {
+                String t = m.group(1).replaceAll("<[^>]+>", " ");
+                t = unescape(t).replaceAll("\\s+", " ").trim();
+                int paren = t.indexOf(" (International Original");
+                if (paren >= 0) t = t.substring(0, paren).trim();
+                int slash = t.indexOf(" / ");
+                if (slash >= 0) t = t.substring(0, slash).trim();
+                String key = normalize(t);
+                if (key.isEmpty() || !seen.add(key)) continue;
+                out.add(new Entry(t, null, priority));
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** FlixPatrol date string (device local date, days back). */
+    private static String flixDate(int daysBack) {
+        try {
+            java.util.Calendar c = java.util.Calendar.getInstance();
+            c.add(java.util.Calendar.DAY_OF_YEAR, -daysBack);
+            return new java.text.SimpleDateFormat("yyyy-MM-dd").format(c.getTime());
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** Fetch a FlixPatrol dated page, trying today then yesterday:
+     *  only today's page is free; dated archives return 402. */
+    private static String flixFetch(String prefix) throws Exception {
+        Exception last = null;
+        for (int back = 0; back <= 1; back++) {
+            try {
+                return fetch(prefix + flixDate(back) + "/");
+            } catch (Exception e) {
+                last = e;
+            }
+        }
+        throw last;
+    }
+
+    /** FlixPatrol daily world chart for one platform, one section
+     *  ("movies" or "tv"). Rows carry a poster img (alt = title);
+     *  falls back to the title div text. */
+    private static List<Entry> flixpatrolWorld(String platform, String section,
+            int priority) {
+        List<Entry> out = new ArrayList<>();
+        try {
+            String body = flixFetch("https://flixpatrol.com/top10/" + platform + "/world/");
+            String head = section.equals("tv") ? "TOP TV Shows" : "TOP Movies";
+            int h = body.indexOf(head);
+            if (h < 0) return out;
+            int end = body.indexOf("<h2", h + 10);
+            String seg = end > 0 ? body.substring(h, end) : body.substring(h);
+            Matcher rm = Pattern.compile("<tr class=\"table-group\">([\\s\\S]*?)</tr>").matcher(seg);
+            Set<String> seen = new HashSet<>();
+            while (rm.find() && out.size() < 10) {
+                String row = rm.group(1);
+                String title = null;
+                String poster = null;
+                Matcher am = Pattern.compile("<img[^>]*alt=\"([^\"]+)\"").matcher(row);
+                if (am.find()) {
+                    title = unescape(am.group(1));
+                    Matcher sm = Pattern.compile("<img[^>]*src=\"([^\"]+)\"").matcher(row);
+                    if (sm.find()) {
+                        poster = sm.group(1);
+                        if (poster.startsWith("/")) poster = "https://flixpatrol.com" + poster;
+                    }
+                } else {
+                    Matcher dm = Pattern.compile("<div>([^<]+)</div>").matcher(row);
+                    String last = null;
+                    while (dm.find()) last = dm.group(1);
+                    if (last != null) title = unescape(last.trim());
+                }
+                if (title == null) continue;
+                String key = normalize(title);
+                if (key.isEmpty() || !seen.add(key)) continue;
+                out.add(new Entry(title, poster, priority));
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** Viu Indonesia TV top 10 via FlixPatrol's Indonesia aggregate
+     *  page (Viu has no world page — 404). Rows are rank, movement,
+     *  title, days; the title is the 3rd cell. */
+    private static List<Entry> viuIndonesia(int priority) {
+        List<Entry> out = new ArrayList<>();
+        try {
+            String body = flixFetch("https://flixpatrol.com/top10/streaming/indonesia/");
+            int h = body.indexOf("Viu TOP 10");
+            if (h < 0) return out;
+            int end = body.indexOf("TOP 10 in ", h + 20);
+            String seg = end > 0 ? body.substring(h, end) : body.substring(h);
+            Matcher rm = Pattern.compile("<tr[^>]*>([\\s\\S]*?)</tr>").matcher(seg);
+            Set<String> seen = new HashSet<>();
+            while (rm.find() && out.size() < 10) {
+                Matcher cm = Pattern.compile("<td[^>]*>([\\s\\S]*?)</td>").matcher(rm.group(1));
+                List<String> cells = new ArrayList<>();
+                while (cm.find()) cells.add(cm.group(1));
+                if (cells.size() < 3) continue;
+                String title = unescape(cells.get(2).replaceAll("<[^>]+>", "").trim());
+                String key = normalize(title);
+                if (key.isEmpty() || !seen.add(key)) continue;
+                out.add(new Entry(title, null, priority));
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
     private static final Pattern IMDB_TITLE = Pattern.compile(
             "\"titleText\":\\s*\\{\\s*\"text\":\\s*\"([^\"]+)\"");
 
@@ -406,7 +585,7 @@ public class TrendingEngine {
                 if (key.isEmpty()) continue;
                 String forced = forcedRow(key);
                 String target;
-                if (forced != null) {
+                if (forced != null && !"worldwide".equals(sl.defaultRow)) {
                     target = forced;
                 } else if ("chinese".equals(sl.defaultRow)
                         && sl.priority == 0) {
@@ -571,7 +750,7 @@ public class TrendingEngine {
     private static Map<String, List<CatalogItem>> fetchAllParallel() {
         final List<SourceList> sources = new ArrayList<>();
         ExecutorService pool = Executors.newFixedThreadPool(8);
-        final CountDownLatch latch = new CountDownLatch(20);
+        final CountDownLatch latch = new CountDownLatch(29);
         // The fetchAll() list is rebuilt here with per-source tasks so
         // a slow source cannot stall the rest.
         List<Runnable> tasks = new ArrayList<>();
@@ -584,6 +763,37 @@ public class TrendingEngine {
             public List<Entry> get() {
                 return addonCatalog(TMDB, "movie", "tmdb.trending", null, 1);
             }
+        }));
+        // v1.9.0: worldwide row is streaming-combined — Netflix
+        // official global charts + Prime official worldwide Originals
+        // + Disney+ via FlixPatrol world + Viu Indonesia via
+        // FlixPatrol. TMDB trending + IMDb dropped from this row.
+        tasks.add(task(sources, latch, "worldwide", true, 0, new Supplier() {
+            public List<Entry> get() { return tudumGlobal("films", 0); }
+        }));
+        tasks.add(task(sources, latch, "worldwide", true, 0, new Supplier() {
+            public List<Entry> get() { return tudumGlobal("films-non-english", 0); }
+        }));
+        tasks.add(task(sources, latch, "worldwide", true, 0, new Supplier() {
+            public List<Entry> get() { return tudumGlobal("tv", 0); }
+        }));
+        tasks.add(task(sources, latch, "worldwide", true, 0, new Supplier() {
+            public List<Entry> get() { return tudumGlobal("tv-non-english", 0); }
+        }));
+        tasks.add(task(sources, latch, "worldwide", true, 1, new Supplier() {
+            public List<Entry> get() { return prime("films", 1); }
+        }));
+        tasks.add(task(sources, latch, "worldwide", true, 1, new Supplier() {
+            public List<Entry> get() { return prime("series", 1); }
+        }));
+        tasks.add(task(sources, latch, "worldwide", true, 2, new Supplier() {
+            public List<Entry> get() { return flixpatrolWorld("disney", "movies", 2); }
+        }));
+        tasks.add(task(sources, latch, "worldwide", true, 2, new Supplier() {
+            public List<Entry> get() { return flixpatrolWorld("disney", "tv", 2); }
+        }));
+        tasks.add(task(sources, latch, "worldwide", true, 2, new Supplier() {
+            public List<Entry> get() { return viuIndonesia(2); }
         }));
         tasks.add(task(sources, latch, "korean", false, 1, new Supplier() {
             public List<Entry> get() {

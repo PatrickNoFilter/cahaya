@@ -93,54 +93,65 @@ public class StreamPicker {
             if (!c.items.isEmpty()) shown.add(c);
         }
         if (shown.isEmpty()) return;
+        // v1.7.0: on phones the columns stack vertically in one
+        // scrollable dialog, so no content measuring or gap math.
+        boolean phone = PhoneUi.isPhone(activity);
         android.util.DisplayMetrics dm =
                 activity.getResources().getDisplayMetrics();
-        android.graphics.Paint titlePaint = new android.graphics.Paint();
-        titlePaint.setTextSize(android.util.TypedValue.applyDimension(
-                android.util.TypedValue.COMPLEX_UNIT_SP, 16, dm));
-        android.graphics.Paint subPaint = new android.graphics.Paint();
-        subPaint.setTextSize(android.util.TypedValue.applyDimension(
-                android.util.TypedValue.COMPLEX_UNIT_SP, 13, dm));
-        android.graphics.Paint headerPaint = new android.graphics.Paint();
-        headerPaint.setTextSize(android.util.TypedValue.applyDimension(
-                android.util.TypedValue.COMPLEX_UNIT_SP, 18, dm));
-        int availPx = (int) (dm.widthPixels * 0.95) - dp(activity, 96);
-        int capPx = availPx / shown.size();
         List<Integer> colWidths = new ArrayList<>();
-        for (Column c : shown) {
-            float w = measure(headerPaint, c.header);
-            for (StreamItem s : c.items) {
-                w = Math.max(w, measure(titlePaint, s.title));
-                w = Math.max(w, measure(subPaint, sub(s)));
-            }
-            colWidths.add(Math.min((int) Math.ceil(w) + dp(activity, 8), capPx));
-        }
-        int sumW = 0;
-        for (int w : colWidths) sumW += w;
         int gapPx = dp(activity, 32);
-        if (sumW + (shown.size() - 1) * gapPx > availPx) {
-            gapPx = dp(activity, 16);
+        if (!phone) {
+            android.graphics.Paint titlePaint = new android.graphics.Paint();
+            titlePaint.setTextSize(android.util.TypedValue.applyDimension(
+                    android.util.TypedValue.COMPLEX_UNIT_SP, 16, dm));
+            android.graphics.Paint subPaint = new android.graphics.Paint();
+            subPaint.setTextSize(android.util.TypedValue.applyDimension(
+                    android.util.TypedValue.COMPLEX_UNIT_SP, 13, dm));
+            android.graphics.Paint headerPaint = new android.graphics.Paint();
+            headerPaint.setTextSize(android.util.TypedValue.applyDimension(
+                    android.util.TypedValue.COMPLEX_UNIT_SP, 18, dm));
+            int availPx = (int) (dm.widthPixels * 0.95) - dp(activity, 96);
+            int capPx = availPx / shown.size();
+            for (Column c : shown) {
+                float w = measure(headerPaint, c.header);
+                for (StreamItem s : c.items) {
+                    w = Math.max(w, measure(titlePaint, s.title));
+                    w = Math.max(w, measure(subPaint, sub(s)));
+                }
+                colWidths.add(Math.min((int) Math.ceil(w) + dp(activity, 8), capPx));
+            }
+            int sumW = 0;
+            for (int w : colWidths) sumW += w;
             if (sumW + (shown.size() - 1) * gapPx > availPx) {
-                float scale = (float) (availPx - (shown.size() - 1) * gapPx) / sumW;
-                for (int i = 0; i < colWidths.size(); i++) {
-                    colWidths.set(i, (int) (colWidths.get(i) * scale));
+                gapPx = dp(activity, 16);
+                if (sumW + (shown.size() - 1) * gapPx > availPx) {
+                    float scale = (float) (availPx - (shown.size() - 1) * gapPx) / sumW;
+                    for (int i = 0; i < colWidths.size(); i++) {
+                        colWidths.set(i, (int) (colWidths.get(i) * scale));
+                    }
                 }
             }
         }
 
         final AlertDialog[] dlgHolder = new AlertDialog[1];
         LinearLayout columnsRow = new LinearLayout(activity);
-        columnsRow.setOrientation(LinearLayout.HORIZONTAL);
+        columnsRow.setOrientation(phone ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
 
         List<List<View>> colButtons = new ArrayList<>();
         for (int ci = 0; ci < shown.size(); ci++) {
             Column c = shown.get(ci);
             LinearLayout col = new LinearLayout(activity);
             col.setOrientation(LinearLayout.VERTICAL);
-            LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(
-                    colWidths.get(ci), ViewGroup.LayoutParams.WRAP_CONTENT);
-            colLp.setMargins(ci == 0 ? 0 : gapPx, 0, 0, 0);
-            col.setLayoutParams(colLp);
+            if (phone) {
+                col.setLayoutParams(new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+            } else {
+                LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(
+                        colWidths.get(ci), ViewGroup.LayoutParams.WRAP_CONTENT);
+                colLp.setMargins(ci == 0 ? 0 : gapPx, 0, 0, 0);
+                col.setLayoutParams(colLp);
+            }
 
             TextView h = new TextView(activity);
             h.setText(c.header);
@@ -198,17 +209,21 @@ public class StreamPicker {
                 list.addView(opt);
                 btns.add(opt);
             }
-            ScrollView sv = new ScrollView(activity);
-            sv.setVerticalScrollBarEnabled(false);
-            sv.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 480)));
-            sv.addView(list);
-            col.addView(sv);
+            if (phone) {
+                col.addView(list);
+            } else {
+                ScrollView sv = new ScrollView(activity);
+                sv.setVerticalScrollBarEnabled(false);
+                sv.setLayoutParams(new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 480)));
+                sv.addView(list);
+                col.addView(sv);
+            }
             columnsRow.addView(col);
             colButtons.add(btns);
         }
-        // Left/Right between columns, same row where possible.
-        for (int i = 0; i < colButtons.size(); i++) {
+        // Left/Right between columns, same row where possible (TV only).
+        if (!phone) for (int i = 0; i < colButtons.size(); i++) {
             List<View> btns = colButtons.get(i);
             List<View> left = i > 0 ? colButtons.get(i - 1) : null;
             List<View> right = i + 1 < colButtons.size()
@@ -225,22 +240,39 @@ public class StreamPicker {
             }
         }
 
-        // Center the row so leftover space splits equally to both
-        // edges; the gaps between columns stay exactly gapPx.
-        android.widget.FrameLayout root =
-                new android.widget.FrameLayout(activity);
-        android.widget.FrameLayout.LayoutParams rowLp =
-                new android.widget.FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        android.view.Gravity.CENTER_HORIZONTAL);
-        columnsRow.setLayoutParams(rowLp);
-        root.addView(columnsRow);
-        root.setPadding(0, dp(activity, 12), 0, dp(activity, 12));
+        // v1.7.0: phones stack the columns in one outer scroll
+        // (capped at 75% of screen height); TVs keep the centered
+        // side-by-side row with exactly gapPx between columns.
+        View contentView;
+        if (phone) {
+            ScrollView outer = new ScrollView(activity);
+            outer.setVerticalScrollBarEnabled(false);
+            columnsRow.setLayoutParams(new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+            outer.addView(columnsRow);
+            outer.setPadding(0, dp(activity, 12), 0, dp(activity, 12));
+            outer.setLayoutParams(new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    (int) (dm.heightPixels * 0.75)));
+            contentView = outer;
+        } else {
+            android.widget.FrameLayout root =
+                    new android.widget.FrameLayout(activity);
+            android.widget.FrameLayout.LayoutParams rowLp =
+                    new android.widget.FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            android.view.Gravity.CENTER_HORIZONTAL);
+            columnsRow.setLayoutParams(rowLp);
+            root.addView(columnsRow);
+            root.setPadding(0, dp(activity, 12), 0, dp(activity, 12));
+            contentView = root;
+        }
 
         AlertDialog dlg = new AlertDialog.Builder(activity)
                 .setTitle(title)
-                .setView(root)
+                .setView(contentView)
                 .setNegativeButton("Cancel", null)
                 .create();
         dlgHolder[0] = dlg;

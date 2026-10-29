@@ -15,6 +15,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.patrisius.cahaya.R;
+import com.patrisius.cahaya.ui.PhoneUi;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -131,14 +132,20 @@ public class SidePanel extends FrameLayout {
             last.setNextFocusDownId(last.getId());
         }
         final Row target = toFocus;
-        if (target != null) post(target::requestFocus);
+        // v1.7.2: when the panel is still hidden (just opened),
+        // don't request focus yet — the ScrollView would scroll to
+        // the row while the panel is still sliding in, making the
+        // list jump mid-animation. show() focuses after the slide.
+        if (target != null && getVisibility() == VISIBLE) post(target::requestFocus);
     }
 
     public void show() {
         if (getVisibility() == VISIBLE) return;
         setVisibility(VISIBLE);
         setTranslationX(getWidth() > 0 ? getWidth() : 420 * dp);
-        animate().translationX(0).setDuration(180).start();
+        animate().translationX(0).setDuration(180).withEndAction(() -> {
+            if (getVisibility() == VISIBLE && toFocus != null) toFocus.requestFocus();
+        }).start();
     }
 
     public void hide() {
@@ -154,6 +161,7 @@ public class SidePanel extends FrameLayout {
         private final IntConsumer step;
         private final Supplier<CharSequence> value;
         private final Runnable onClick;
+        private final boolean phoneMode;
         private final GradientDrawable bg = new GradientDrawable();
 
         Row(Context c, String label, String detail, boolean selected,
@@ -161,6 +169,7 @@ public class SidePanel extends FrameLayout {
             super(c);
             float dp = c.getResources().getDisplayMetrics().density;
             this.step = step; this.value = value; this.onClick = onClick;
+            this.phoneMode = PhoneUi.isPhone(c);
             setId(View.generateViewId());
             setOrientation(HORIZONTAL);
             setGravity(Gravity.CENTER_VERTICAL);
@@ -201,11 +210,25 @@ public class SidePanel extends FrameLayout {
             if (value != null) {
                 addView(chevL); addView(valueV); addView(chevR);
                 valueV.setText(value.get());
+                // v1.7.2: chevrons are tappable — on touch there is
+                // no D-pad Left/Right, so this is the way to step a
+                // value on a phone.
+                chevL.setClickable(true);
+                chevL.setOnClickListener(v -> { if (step != null) { step.accept(-1); refreshValue(); } });
+                chevR.setClickable(true);
+                chevR.setOnClickListener(v -> { if (step != null) { step.accept(1); refreshValue(); } });
             } else {
                 addView(check);
                 check.setVisibility(selected ? VISIBLE : INVISIBLE);
             }
-            setOnClickListener(v -> { if (this.onClick != null) this.onClick.run(); });
+            // v1.7.2: a stepper with no activate action steps forward
+            // on tap (Colour, Edge, Opacity, Auto-select). Steppers
+            // with an activate (Size/Height reset) keep it — use the
+            // chevrons to step those.
+            setOnClickListener(v -> {
+                if (this.onClick != null) this.onClick.run();
+                else if (this.step != null) { this.step.accept(1); refreshValue(); }
+            });
             paint();
         }
 
@@ -235,7 +258,9 @@ public class SidePanel extends FrameLayout {
             check.setColorFilter(f ? PlayerTheme.ROW_ON_FOCUS : PlayerTheme.ACCENT);
             chevL.setColorFilter(fg);
             chevR.setColorFilter(fg);
-            int vis = (f && step != null) ? VISIBLE : INVISIBLE;
+            // v1.7.2: on touch there is no focus, so steppers would
+            // never show their chevrons — always show them on phones.
+            int vis = (step != null && (f || phoneMode)) ? VISIBLE : INVISIBLE;
             chevL.setVisibility(vis);
             chevR.setVisibility(vis);
         }

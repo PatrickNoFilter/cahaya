@@ -15,6 +15,7 @@ import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.SurfaceHolder;
+import android.view.MotionEvent;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -152,6 +153,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private double videoAspect = 0; // from video-params; 0 = unknown
 
     private final Runnable hideController = this::hideControllerNow;
+    // v1.7.2: guards the hide fade's end action — a stale one must
+    // never hide the controller after it faded back in.
+    private int hideGen = 0;
     private final Runnable hideHint = () -> hintView.setVisibility(View.GONE);
     private final Runnable progressTick = new Runnable() {
         @Override public void run() {
@@ -436,6 +440,33 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         subtitleOverlay = new SubtitleOverlay(this, root, prefs);
 
         setContentView(root);
+
+        // v1.7.1: tap the video area to show/hide the controls. On
+        // TV the panel is driven by remote keys; on a phone there
+        // are no keys, so without this the panel could never come
+        // back after its auto-hide. Taps on buttons and the seek
+        // bar consume their own touch, so this only fires on bare
+        // video area.
+        root.setOnTouchListener((v, e) -> {
+            if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                if (panel.isOpen()) {
+                    // v1.7.2: tap outside the menu dismisses it. Taps
+                    // inside the panel never reach here (the panel
+                    // and its rows consume their own touches); the
+                    // bounds check covers any non-consuming area.
+                    int[] loc = new int[2];
+                    panel.getLocationOnScreen(loc);
+                    float x = e.getRawX(), y = e.getRawY();
+                    if (x < loc[0] || x > loc[0] + panel.getWidth()
+                            || y < loc[1] || y > loc[1] + panel.getHeight()) {
+                        closePanel();
+                    }
+                } else {
+                    toggleController();
+                }
+            }
+            return false;
+        });
     }
 
     private TextView timeText(String s) {
@@ -991,9 +1022,28 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // Controller visibility
     // =====================================================================
 
+    // v1.7.1: touch equivalent of the remote's show/hide keys.
+    // Mirrors BACK: hide is immediate and skipped while paused
+    // (the panel stays up while paused); show reuses showController
+    // so the auto-hide timer restarts. No-op while a side panel
+    // is open — the panel owns its own dismissal.
+    private void toggleController() {
+        if (panel.isOpen()) return;
+        if (controller.getVisibility() == View.VISIBLE) {
+            if (!paused) {
+                main.removeCallbacks(hideController);
+                subtitleOverlay.setLifted(false);
+                controller.setVisibility(View.GONE);
+            }
+        } else {
+            showController();
+        }
+    }
+
     private void showController() {
         if (panel.isOpen()) return;
         main.removeCallbacks(hideController);
+        hideGen++; // invalidate any in-flight hide fade's end action
         if (controller.getVisibility() != View.VISIBLE) {
             controller.setAlpha(0f);
             controller.setVisibility(View.VISIBLE);
@@ -1020,9 +1070,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void hideControllerNow() {
         if (panel.isOpen() || controller.getVisibility() != View.VISIBLE) return;
         if (paused) return;                       // stay visible while paused
+        final int g = ++hideGen;
         subtitleOverlay.setLifted(false);
         controller.animate().alpha(0f).setDuration(200).withEndAction(() -> {
-            if (!paused) controller.setVisibility(View.GONE);
+            if (!paused && g == hideGen) controller.setVisibility(View.GONE);
         }).start();
     }
 
@@ -1157,7 +1208,19 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panelKind = kind;
         panelOpener = opener;
         main.removeCallbacks(hideController);
-        controller.setVisibility(View.GONE);
+        // v1.7.3: fade the bar out instead of cutting it — the instant
+        // vanish flashed the video bright on every menu open. The
+        // generation guard keeps a stale end action from hiding the
+        // bar after it fades back in (see showController).
+        if (controller.getVisibility() == View.VISIBLE) {
+            final int g = ++hideGen;
+            controller.animate().cancel();
+            controller.animate().alpha(0f).setDuration(150).withEndAction(() -> {
+                if (g == hideGen) controller.setVisibility(View.GONE);
+            }).start();
+        } else {
+            controller.setVisibility(View.GONE);
+        }
         subtitleOverlay.setLifted(false);
         subtitleOverlay.setPreview(kind == P_STYLE);
         rebuildPanel();
@@ -1205,7 +1268,20 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
     private void buildSubtitlePanel() {
         int restore = panel.isOpen() ? panel.focusedIndex() : -1;
+        // v1.7.2: Adjust moved to the top (was below the whole
+        // online list), so a focused row shifts down by its 2 rows.
+        if (restore >= 0) restore += 2;
         panel.begin("Subtitles");
+
+        panel.section("Adjust");
+        panel.stepper("Delay", () -> TimeFmt.delay(subDelayMs), dir -> changeDelay(dir * 100),
+                () -> { subDelayMs = 0; applyDelay(); });
+        panel.row("Appearance", "Size, colour, outline, background, height", false, () -> {
+            panelKind = P_STYLE;
+            subtitleOverlay.setPreview(true);
+            rebuildPanel();
+        });
+
         List<MpvTrack> tracks = MpvTrack.read("sub");
 
         panel.row("Off", null, sel.isOff(), () -> { disableSubtitles(); autoSubDone = true; rebuildPanel(); });
@@ -1254,14 +1330,6 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             panel.row("Show " + more + " more", null, false, () -> { onlineExpanded = true; rebuildPanel(); });
         }
 
-        panel.section("Adjust");
-        panel.stepper("Delay", () -> TimeFmt.delay(subDelayMs), dir -> changeDelay(dir * 100),
-                () -> { subDelayMs = 0; applyDelay(); });
-        panel.row("Appearance", "Size, colour, outline, background, height", false, () -> {
-            panelKind = P_STYLE;
-            subtitleOverlay.setPreview(true);
-            rebuildPanel();
-        });
         panel.end(restore);
     }
 

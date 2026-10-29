@@ -9,16 +9,60 @@ Nuvio and CloudStream — with support for community addons and plugins.
 
 ## Releases
 
-Current version: **1.6.4** (build 81). Release APKs are published on the
-[Releases page](https://github.com/PatrickNoFilter/cahaya/releases) — one
-release per version, each carrying its own APK.
+One codebase, one universal APK per build (arm64-v8a + armeabi-v7a,
+TV + phone UI auto-detected). Two release tracks mark the build each
+device currently runs:
 
-Install: sideload the APK on an Android TV box (armeabi-v7a, Android 11+).
-The APK is ~93 MB because it bundles the libmpv player and the in-app
-torrent engine. No Play Store release yet.
+- **Phone: 1.11.0** (build 88) — latest. Portrait phone UI, side
+  drawer, auto-rotating worldwide banner with a 2–10 s setting,
+  Display settings (banner interval, blur/solid background).
+- **TV box: 1.9.0** (build 86) — the build currently on the box.
+  Streaming-combined Trending Worldwide row (Netflix, Prime, Viu,
+  Disney+).
+
+Release APKs are published on the
+[Releases page](https://github.com/PatrickNoFilter/cahaya/releases) —
+the phone release carries the 1.11.0 APK, the box release the 1.9.0
+APK. The 1.11.0 APK also runs on the box (same universal APK); the
+box release exists to preserve the box's current build.
+
+Install: phone — download the APK and tap it (My Files → Internal
+storage → Download). Box — sideload with
+`adb install --no-incremental -r Cahaya-vX.Y.Z.apk` (plain
+incremental install reports Success without installing a ~93 MB
+APK). The APK is ~93 MB because it bundles the libmpv player and
+the in-app torrent engine. No Play Store release yet.
 
 ### Changelog
 
+- **1.11.0** — Settings → Display: banner auto-change 2–10 s;
+  background Blur picture / Solid (black, blue, yellow, green, red);
+  Settings Version row now reads from the package (it was a hardcoded
+  string); Player row fixed (it still said "System player — coming
+  in v0.3"; the app ships the in-app libmpv player); top bar shows
+  "Cahaya vX.Y.Z" beside the menu button.
+- **1.10.0** — Phone: adaptive banner returns as an auto-rotating
+  worldwide banner (cycles the whole worldwide list; TV banner stays
+  cursor-driven); top menu strip replaced by a top-left ☰ button +
+  hidden side drawer (closes on button, body tap, or menu pick).
+- **1.9.0** — Trending Worldwide sources replaced: Netflix Tudum
+  global charts (4 categories) + Prime worldwide Originals (films +
+  series combined lists) + Disney+ via FlixPatrol world today + Viu
+  Indonesia via FlixPatrol aggregate; TMDB trending + IMDb dropped
+  from worldwide only (Hollywood rows unchanged).
+- **1.8.0** — Player menu glitch third pass (control bar fades out
+  over 150 ms on panel open); first Home row Trending Worldwide
+  (TMDB trending + IMDb moviemeter + IMDb TV at that time).
+- **1.7.2** — Panel fixes: focus lands after the slide completes,
+  stale-fade guard, outside-tap dismiss, subtitle Adjust section
+  moved to top, appearance steppers work on touch.
+- **1.7.1** — Phone: adaptive banner removed on phones only (later
+  brought back as the rotating banner in 1.10.0); player tap toggles
+  the control panel.
+- **1.7.0** — Phone UI in the same APK: portrait layout, top menu
+  strip (later replaced by the drawer in 1.10.0), selected-tab
+  highlight, 160dp history cards, vertical Details, stacked
+  stream-picker columns; TV layout untouched.
 - **1.6.4** — Frame clip chain completed: every ancestor of a card
   strip no longer clips, and strips are padded 12dp on all sides, so
   the first/last cards' frames are complete too (row titles inset to
@@ -141,12 +185,18 @@ Cahaya hosts **no content**. It is a client shell that talks to addons:
 ## Layout
 
 ```
-app/src/main/java/com/patrisius/cahaya/
+bootstrap/src/com/patrisius/cahaya/
   addon/          # Stremio-protocol engine: manifest model, HTTP client, manager
-  model/          # MediaItem, Episode, StreamSource, SubtitleTrack
-  plugin/         # Phase-3 native plugin host (stub)
-  ui/             # Leanback TV UI skeleton + Media3 playback
+  plugin/         # Phase-3 native plugin host
+  ui/             # TV + phone UI, player, stream picker, panels
+  torrent/        # In-app torrent streaming (libtorrent4j + localhost HTTP)
+  jsrunner/       # WebView JS scraper runtime (4khdhub, PlayIMDb)
+  scraper/        # In-app site scrapers (e.g. FibWatch)
+  qr/ web/        # QR + phone web addon-install flow
 ```
+
+(The Gradle/Kotlin scaffold in `app/` is a stub and does not build
+here; everything above is the shipping code.)
 
 ## Roadmap
 
@@ -172,7 +222,8 @@ app/src/main/java/com/patrisius/cahaya/
 - [ ] Phase 3 — native plugin SDK + sample plugin (in progress: the HTTP
       plugin host and the WebView JS scraper runtime already ship; a formal
       SDK with a sample plugin is still open)
-- [ ] Phase 4 — phone companion / multiplatform (his call)
+- [x] Phase 4 — phone UI in the same APK (since 1.7.0: phone vs TV
+      auto-detected, portrait layout, drawer, rotating banner)
 
 Proposed, only on his word:
 
@@ -184,17 +235,20 @@ Proposed, only on his word:
 
 ## Building
 
-Gradle project. First build needs network for dependencies
-(google() + mavenCentral()). The `forge` InstaBox machine has the Android SDK
-and JDK; the manual aapt2/javac/d8 pipeline in `~/workspace/tvhome-build`
-is the fallback if Gradle misbehaves in this sandbox.
+Shipped builds come from the manual pipeline in `bootstrap/` —
+Gradle's daemon cannot run in this sandbox, and the Gradle/Kotlin
+project in `app/` is a stub that does not build here.
 
 ```
-cd ~/workspace/cahaya
-gradle :app:assembleDebug        # or ./gradlew once the wrapper jar is added
+cd bootstrap
+./build.sh   # aapt2 → javac → d8 → zipalign → apksigner
 ```
 
-`local.properties` with `sdk.dir=` is gitignored — point it at your SDK.
+`build.sh` sets the version (APK name, version-code, version-name).
+The signing keystore `keystore/cahaya.jks` is gitignored — keep it
+safe, reuse for updates. The in-app Settings version label and the
+phone top-bar title read the version from the package, so they track
+every bump on their own.
 
 ## Legal posture
 

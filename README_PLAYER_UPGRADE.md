@@ -1,3 +1,8 @@
+> **Status note (2026-10-29):** historical v0.9 design doc. The player
+> it describes has long since shipped and evolved — current releases
+> are phone 1.11.0 and TV box 1.9.0 (see `README.md` changelog). Kept
+> for the design rationale, not as a build guide.
+
 # Cahaya v0.9: modern player, navigation, icons and subtitles
 
 This change set rebuilds the player screen of the **bootstrap** app (`bootstrap/`, the Java build that

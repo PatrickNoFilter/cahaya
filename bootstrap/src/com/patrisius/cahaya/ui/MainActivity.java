@@ -69,6 +69,8 @@ public class MainActivity extends Activity {
     private LruCache<String, Bitmap> memCache;
 
     private LinearLayout sidebar;
+    // v1.10.0 phone drawer: tap-catching scrim behind the drawer.
+    private View phoneScrim = null;
     private FrameLayout content;
     private ImageView brandLogo;
     // v0.10.7: infoBar REMOVED — it showed the focused title/menu name in
@@ -81,6 +83,9 @@ public class MainActivity extends Activity {
     private final List<TextView> menuLabels = new ArrayList<>();
     private int selected = 0;
     private boolean sidebarExpanded = true;
+    // v1.7.0: phone (non-TV) layout mode — top menu strip instead
+    // of the sidebar rail, portrait-friendly cards and pickers.
+    private boolean phoneMode;
 
     private void updateInfo(String text) {
         if (infoBar != null) {
@@ -123,6 +128,18 @@ public class MainActivity extends Activity {
         if (homeRows != null) {
             main.post(this::refreshContinueWatching);
         }
+        // v1.10.0: resume the phone banner rotation on Home.
+        if (phoneMode && selected == 0) {
+            startWorldwideRotation();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        // v1.10.0: stop the phone banner rotation while another
+        // screen (Details, player) is in front.
+        stopWorldwideRotation();
+        super.onPause();
     }
 
     @Override
@@ -141,21 +158,69 @@ public class MainActivity extends Activity {
             }
         };
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.HORIZONTAL);
+        phoneMode = PhoneUi.isPhone(this);
 
-        sidebar = new LinearLayout(this);
-        sidebar.setOrientation(LinearLayout.VERTICAL);
-        sidebar.setBackgroundColor(Color.TRANSPARENT); // v0.10.28: blurred photo shows through the side panel too
-        int sideW = dp(280);
-        root.addView(sidebar, new LinearLayout.LayoutParams(
-                sideW, ViewGroup.LayoutParams.MATCH_PARENT));
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(phoneMode ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+
+        // v1.10.0: phones get a top-left menu button + a hidden side
+        // drawer instead of the 1.7.0 top menu strip; TVs keep the
+        // rail unchanged. The drawer (the `sidebar` field) lives as
+        // an overlay inside the body frame, above the content, with
+        // a tap-catching scrim behind it — so when closed, no menu
+        // chrome shows except the button, and tapping the button
+        // again or the body hides it. The brand logo and account
+        // label are still created (code elsewhere updates them) and
+        // now head the drawer on phones, the rail on TV.
+        LinearLayout topBarRow = null;
+        if (phoneMode) {
+            topBarRow = new LinearLayout(this);
+            topBarRow.setOrientation(LinearLayout.HORIZONTAL);
+            topBarRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            topBarRow.setBackgroundColor(Color.TRANSPARENT);
+            TextView menuBtn = new TextView(this);
+            menuBtn.setText("☰");
+            menuBtn.setTextSize(24);
+            menuBtn.setTextColor(Color.WHITE);
+            menuBtn.setPadding(dp(16), dp(12), dp(16), dp(12));
+            menuBtn.setFocusable(true);
+            menuBtn.setClickable(true);
+            menuBtn.setContentDescription("Menu");
+            menuBtn.setOnClickListener(v -> togglePhoneDrawer());
+            topBarRow.addView(menuBtn);
+            // v1.11.0: app name + version right of the menu button,
+            // read from the package so it can never go stale.
+            TextView topTitle = new TextView(this);
+            topTitle.setText("Cahaya v" + appVersionName());
+            topTitle.setTextSize(17);
+            topTitle.setTextColor(Color.WHITE);
+            topTitle.setTypeface(topTitle.getTypeface(), android.graphics.Typeface.BOLD);
+            topTitle.setPadding(dp(4), dp(12), dp(16), dp(12));
+            topBarRow.addView(topTitle);
+            sidebar = new LinearLayout(this);
+            sidebar.setOrientation(LinearLayout.VERTICAL);
+            sidebar.setBackgroundColor(Color.parseColor("#23262B"));
+            sidebar.setVisibility(View.GONE);
+            phoneScrim = new View(this);
+            phoneScrim.setBackgroundColor(Color.parseColor("#66000000"));
+            phoneScrim.setVisibility(View.GONE);
+            phoneScrim.setClickable(true);
+            phoneScrim.setOnClickListener(v -> hidePhoneDrawer());
+        } else {
+            sidebar = new LinearLayout(this);
+            sidebar.setOrientation(LinearLayout.VERTICAL);
+            sidebar.setBackgroundColor(Color.TRANSPARENT); // v0.10.28: blurred photo shows through the side panel too
+            int sideW = dp(280);
+            root.addView(sidebar, new LinearLayout.LayoutParams(
+                    sideW, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
 
         brandLogo = new ImageView(this);
         brandLogo.setImageResource(R.drawable.app_banner);
         brandLogo.setAdjustViewBounds(true);
         brandLogo.setScaleType(ImageView.ScaleType.FIT_START);
         brandLogo.setPadding(dp(16), dp(20), dp(16), dp(12));
+        // v1.10.0: the logo heads the drawer on phones, the rail on TV.
         sidebar.addView(brandLogo, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -169,6 +234,8 @@ public class MainActivity extends Activity {
         accountLabel.setPadding(dp(16), 0, dp(16), dp(12));
         accountLabel.setSingleLine(true);
         accountLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        // v1.10.0: the account line sits under the logo in the
+        // drawer on phones, the rail on TV.
         sidebar.addView(accountLabel, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -178,19 +245,20 @@ public class MainActivity extends Activity {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(16), dp(12), dp(16), dp(12));
+            row.setPadding(phoneMode ? dp(12) : dp(16), phoneMode ? dp(10) : dp(12),
+                    phoneMode ? dp(12) : dp(16), phoneMode ? dp(10) : dp(12));
             row.setFocusable(true);
             row.setClickable(true);
 
             TextView icon = new TextView(this);
             icon.setText(ICONS[i]);
-            icon.setTextSize(24);
-            row.addView(icon, new LinearLayout.LayoutParams(dp(40),
+            icon.setTextSize(phoneMode ? 20 : 24);
+            row.addView(icon, new LinearLayout.LayoutParams(phoneMode ? dp(28) : dp(40),
                     ViewGroup.LayoutParams.WRAP_CONTENT));
 
             TextView label = new TextView(this);
             label.setText(MENU[i]);
-            label.setTextSize(17);
+            label.setTextSize(phoneMode ? 14 : 17);
             label.setSingleLine(true);
             row.addView(label, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -198,12 +266,20 @@ public class MainActivity extends Activity {
 
             row.setOnClickListener(v -> selectMenu(idx, true));
             row.setOnFocusChangeListener((v, hasFocus) -> paintMenuItem(idx, hasFocus));
+            // v1.10.0: drawer rows span the full drawer width; the
+            // old top strip used wrap-content rows side by side.
+            if (phoneMode) {
+                row.setLayoutParams(new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
             sidebar.addView(row);
             menuRows.add(row);
             menuLabels.add(label);
         }
 
-        // Version label at bottom of sidebar
+        // Version label at bottom of sidebar (rail on TV, drawer
+        // on phones since v1.10.0).
         TextView versionLabel = new TextView(this);
         try {
             String ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
@@ -223,15 +299,39 @@ public class MainActivity extends Activity {
 
         LinearLayout contentCol = new LinearLayout(this);
         contentCol.setOrientation(LinearLayout.VERTICAL);
-        root.addView(contentCol, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        // v1.10.0: the body is a FrameLayout so the phone drawer +
+        // scrim can overlay the content. TV geometry is unchanged:
+        // the frame takes contentCol's old params and contentCol
+        // fills it.
+        FrameLayout bodyFrame = new FrameLayout(this);
+        bodyFrame.addView(contentCol, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        if (phoneMode) {
+            if (topBarRow != null) {
+                root.addView(topBarRow, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+            bodyFrame.addView(phoneScrim, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            bodyFrame.addView(sidebar, new FrameLayout.LayoutParams(
+                    dp(280), ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.Gravity.LEFT));
+        }
+        root.addView(bodyFrame, phoneMode
+                ? new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+                : new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         // No top name bar anymore (v0.10.7): the adaptive banner is the
         // title now, so content starts at the very top and gains 64dp.
         content = new FrameLayout(this);
         // v1.5.6: no gap between the sidebar and the body — the
         // body's left padding is 0 in both sidebar states.
-        content.setPadding(0, dp(8), dp(28), dp(28));
+        content.setPadding(0, dp(8), phoneMode ? 0 : dp(28), phoneMode ? dp(12) : dp(28));
         contentCol.addView(content, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -248,6 +348,9 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(frame);
+        // v1.11.0: paint the stored background mode on launch — in
+        // solid mode nothing else would paint it until Settings.
+        applyBackgroundMode();
         root.getViewTreeObserver().addOnGlobalFocusChangeListener(
                 (oldFocus, newFocus) -> {
                     if (newFocus == null) {
@@ -284,6 +387,17 @@ public class MainActivity extends Activity {
         LinearLayout row = menuRows.get(idx);
         TextView label = menuLabels.get(idx);
         boolean isSel = idx == selected;
+        if (phoneMode) {
+            // Touch has no focus: the selected tab carries the
+            // highlight itself, or no tab would ever look active.
+            row.setBackgroundColor(isSel
+                    ? Color.parseColor("#35617A") : Color.TRANSPARENT);
+            label.setTextColor(isSel
+                    ? Color.WHITE : Color.parseColor("#9AA0A6"));
+            row.setScaleX(1.0f);
+            row.setScaleY(1.0f);
+            return;
+        }
         // v1.0.0: the selected tab shows NO highlight while focus is
         // in the body — transparent background and grey label, just
         // like every other tab. Only the actually focused row gets a
@@ -306,11 +420,36 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** v1.10.0 phone drawer: show/hide the side menu. When closed,
+     *  only the top-left button remains — no menu chrome in body
+     *  view. Tapping the button again, the scrim (body), or picking
+     *  a menu item all hide it. No-ops on TV. */
+    private void togglePhoneDrawer() {
+        if (!phoneMode || sidebar == null) return;
+        if (sidebar.getVisibility() == View.VISIBLE) {
+            hidePhoneDrawer();
+        } else {
+            sidebar.setVisibility(View.VISIBLE);
+            if (phoneScrim != null) phoneScrim.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void hidePhoneDrawer() {
+        if (!phoneMode) return;
+        if (sidebar != null) sidebar.setVisibility(View.GONE);
+        if (phoneScrim != null) phoneScrim.setVisibility(View.GONE);
+    }
+
     /**
      * Collapses the sidebar to an icon rail when focus moves into the
      * content pane, and expands it (icons + labels) when focus returns.
      */
     private void setSidebarExpanded(boolean expanded) {
+        // v1.7.0: no rail on phones — the top strip never collapses,
+        // and brandLogo would otherwise be toggled on a bare view.
+        if (phoneMode) {
+            return;
+        }
         if (sidebarExpanded == expanded) {
             return;
         }
@@ -405,6 +544,16 @@ public class MainActivity extends Activity {
         selected = idx;
         refreshMenuPaint();
         updateInfo(MENU[idx]);
+        // v1.10.0: picking a menu item closes the phone drawer, and
+        // the worldwide banner rotation runs only on Home.
+        if (phoneMode) {
+            hidePhoneDrawer();
+            if (idx == 0) {
+                startWorldwideRotation();
+            } else {
+                stopWorldwideRotation();
+            }
+        }
         content.removeAllViews();
         View screen;
         switch (idx) {
@@ -468,6 +617,10 @@ public class MainActivity extends Activity {
         LinearLayout homeRoot = new LinearLayout(this);
         homeRoot.setOrientation(LinearLayout.VERTICAL);
 
+        // v1.10.0: the banner is back on phones as an auto-rotating
+        // worldwide banner (see worldwideRotate); TVs keep the
+        // cursor-driven banner unchanged. (v1.7.1 had removed it on
+        // phones; the user asked it back in this rotating form.)
         heroSlot = new LinearLayout(this);
         heroSlot.setOrientation(LinearLayout.VERTICAL);
         homeRoot.addView(heroSlot, new LinearLayout.LayoutParams(
@@ -625,7 +778,7 @@ public class MainActivity extends Activity {
     private View makeContinueCard(ContinueWatching.Item it) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        int w = dp(200);
+        int w = phoneMode ? dp(160) : dp(200);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 w, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.setMargins(0, 0, dp(12), 0);
@@ -636,7 +789,7 @@ public class MainActivity extends Activity {
 
         // Thumbnail with progress overlay
         FrameLayout thumb = new FrameLayout(this);
-        thumb.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(112)));
+        thumb.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), phoneMode ? dp(86) : dp(112)));
         ImageView poster = new ImageView(this);
         poster.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1020,6 +1173,111 @@ public class MainActivity extends Activity {
     private TextView heroBadge = null;
     private CatalogItem heroItem = null;
     private int heroMetaSeq = 0;
+    // v1.10.0 phone banner rotation: the resolved worldwide list is
+    // cycled through by a timer instead of following the cursor
+    // (phones have no cursor). TV never starts this timer.
+    // v1.11.0: the interval is a Settings value (2–10s, default 2s).
+    private java.util.List<CatalogItem> worldwideItems = null;
+    private int worldwideIdx = 0;
+    private final Runnable worldwideRotate = new Runnable() {
+        @Override
+        public void run() {
+            if (!phoneMode || selected != 0
+                    || worldwideItems == null || worldwideItems.isEmpty()) {
+                return;
+            }
+            worldwideIdx = (worldwideIdx + 1) % worldwideItems.size();
+            updateHero(worldwideItems.get(worldwideIdx));
+            main.postDelayed(this, bannerIntervalMs());
+        }
+    };
+
+    private void startWorldwideRotation() {
+        if (!phoneMode || selected != 0
+                || worldwideItems == null || worldwideItems.isEmpty()) {
+            return;
+        }
+        main.removeCallbacks(worldwideRotate);
+        main.postDelayed(worldwideRotate, bannerIntervalMs());
+    }
+
+    private void stopWorldwideRotation() {
+        main.removeCallbacks(worldwideRotate);
+    }
+
+    /** v1.11.0 display settings (SharedPreferences "cahaya_settings"):
+     *  banner auto-change interval, background mode, solid color. */
+    private android.content.SharedPreferences displayPrefs() {
+        return getSharedPreferences("cahaya_settings", MODE_PRIVATE);
+    }
+
+    private int bannerIntervalSec() {
+        int s = displayPrefs().getInt("banner_interval_sec", 2);
+        return Math.max(2, Math.min(10, s));
+    }
+
+    private long bannerIntervalMs() {
+        return bannerIntervalSec() * 1000L;
+    }
+
+    private boolean isSolidBackground() {
+        return "solid".equals(displayPrefs().getString("bg_mode", "blur"));
+    }
+
+    private String bgColorName() {
+        return displayPrefs().getString("bg_color", "black");
+    }
+
+    private String bgColorLabel() {
+        String n = bgColorName();
+        return n.substring(0, 1).toUpperCase() + n.substring(1);
+    }
+
+    private int bgColorValue(String name) {
+        switch (name) {
+            case "blue": return Color.parseColor("#2196F3");
+            case "yellow": return Color.parseColor("#FFC107");
+            case "green": return Color.parseColor("#4CAF50");
+            case "red": return Color.parseColor("#F44336");
+            default: return Color.BLACK;
+        }
+    }
+
+    /** Applies the stored background mode now: solid paints
+     *  appBgView's background and clears its bitmap; blur clears
+     *  the color and re-runs the blur for the current hero. */
+    private void applyBackgroundMode() {
+        if (appBgView == null) return;
+        if (isSolidBackground()) {
+            appBgView.setImageBitmap(null);
+            appBgView.setBackgroundColor(bgColorValue(bgColorName()));
+        } else {
+            appBgView.setBackgroundColor(Color.TRANSPARENT);
+            if (heroItem != null) updateAppBackground(heroItem.poster);
+        }
+    }
+
+    /** v1.11.0: never-hardcoded version strings — read from the
+     *  package so Settings and the top bar can never show a stale
+     *  version again (the old Settings row was a hardcoded string
+     *  that had to be re-edited on every bump). */
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
+        }
+    }
+
+    private String appVersionLabel() {
+        try {
+            android.content.pm.PackageInfo pi =
+                    getPackageManager().getPackageInfo(getPackageName(), 0);
+            return pi.versionName + " (build " + pi.versionCode + ")";
+        } catch (Exception e) {
+            return "?";
+        }
+    }
     private final java.util.Map<String, com.patrisius.cahaya.addon.MetaDetails> heroMetaCache =
             new java.util.HashMap<>();
 
@@ -1044,8 +1302,9 @@ public class MainActivity extends Activity {
                         }
                         if (homeRows != null) {
                             // Create the adaptive hero once, in its pinned
-                            // slot above the scroll area; its content then
-                            // follows card focus while rows scroll below.
+                            // slot above the scroll area; on TV its content
+                            // follows card focus while rows scroll below,
+                            // on phones the worldwide rotation drives it.
                             if (heroView == null) {
                                 heroView = makeHero();
                                 if (heroSlot != null
@@ -1111,6 +1370,17 @@ public class MainActivity extends Activity {
                                     @Override
                                     public void onRow(String key, java.util.List<CatalogItem> resolved) {
                                         if (homeRows == null || resolved == null || resolved.isEmpty()) return;
+                                        // v1.10.0: the phone banner cycles this list.
+                                        // On a refresh the list is replaced and the
+                                        // rotation restarts from the new #1.
+                                        if ("worldwide".equals(key)) {
+                                            worldwideItems = new java.util.ArrayList<>(resolved);
+                                            worldwideIdx = 0;
+                                            if (phoneMode && selected == 0) {
+                                                updateHero(resolved.get(0));
+                                                startWorldwideRotation();
+                                            }
+                                        }
                                         if (!seeded[0]) {
                                             updateHero(resolved.get(0));
                                             seeded[0] = true;
@@ -2614,12 +2884,109 @@ public class MainActivity extends Activity {
         col.addView(gBtn, new LinearLayout.LayoutParams(dp(280),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        addSettingRow(col, "Version", "1.6.4 (build 81)");
+        // Display (v1.11.0)
+        TextView dh = new TextView(this);
+        dh.setText("Display");
+        dh.setTextSize(22);
+        dh.setTextColor(Color.WHITE);
+        dh.setPadding(0, dp(8), 0, dp(4));
+        col.addView(dh);
+
+        addSettingOptionRow(col, "Banner auto-change",
+                bannerIntervalSec() + " seconds", v -> {
+            String[] items = new String[9];
+            for (int i = 0; i < 9; i++) items[i] = (i + 2) + " seconds";
+            showSingleChoiceDialog("Banner auto-change", items,
+                    bannerIntervalSec() - 2, (d, which) -> {
+                d.dismiss();
+                displayPrefs().edit()
+                        .putInt("banner_interval_sec", which + 2).apply();
+                // Rotation re-reads the interval on every tick, so a
+                // new value applies on Home without restarting it.
+                selectMenu(5, false);
+            });
+        });
+        addSettingOptionRow(col, "Background",
+                isSolidBackground() ? "Solid" : "Blur picture", v -> {
+            String[] items = {"Blur picture", "Solid color"};
+            showSingleChoiceDialog("Background", items,
+                    isSolidBackground() ? 1 : 0, (d, which) -> {
+                d.dismiss();
+                displayPrefs().edit()
+                        .putString("bg_mode", which == 1 ? "solid" : "blur")
+                        .apply();
+                applyBackgroundMode();
+                selectMenu(5, false);
+            });
+        });
+        if (isSolidBackground()) {
+            addSettingOptionRow(col, "Background color",
+                    bgColorLabel(), v -> {
+                String[] names = {"Black", "Blue", "Yellow", "Green", "Red"};
+                String[] keys = {"black", "blue", "yellow", "green", "red"};
+                int checked = 0;
+                for (int i = 0; i < keys.length; i++) {
+                    if (keys[i].equals(bgColorName())) checked = i;
+                }
+                showSingleChoiceDialog("Background color", names, checked,
+                        (d, which) -> {
+                    d.dismiss();
+                    displayPrefs().edit()
+                            .putString("bg_color", keys[which]).apply();
+                    applyBackgroundMode();
+                    selectMenu(5, false);
+                });
+            });
+        }
+
+        // v1.11.0 audit: Version is now read from the package (it was
+        // a hardcoded string that had to be re-edited on every bump);
+        // addon/plugin counts were already live. Player was stale —
+        // it said "System player — coming in v0.3" while the app has
+        // shipped the in-app libmpv player since v0.10.
+        addSettingRow(col, "Version", appVersionLabel());
         addSettingRow(col, "Installed addons", String.valueOf(mgr.addonUrls().size()));
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
-        addSettingRow(col, "Player", "System player — coming in v0.3");
+        addSettingRow(col, "Player", "libmpv (in-app player)");
         return col;
+    }
+
+    /** v1.11.0: a tappable settings row — label left, current value
+     *  right in accent blue. Works on touch and D-pad (click). */
+    private void addSettingOptionRow(LinearLayout col, String label, String value,
+            View.OnClickListener onClick) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(dp(4), dp(10), dp(4), dp(10));
+        row.setFocusable(true);
+        row.setClickable(true);
+        row.setOnClickListener(onClick);
+
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextColor(Color.GRAY);
+        l.setTextSize(16);
+        row.addView(l, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextColor(Color.parseColor("#2196F3"));
+        v.setTextSize(16);
+        row.addView(v);
+        col.addView(row);
+    }
+
+    /** v1.11.0: single-choice dialog for a settings option. The
+     *  caller's listener dismisses the dialog, then persists. */
+    private void showSingleChoiceDialog(String title, String[] items, int checked,
+            android.content.DialogInterface.OnClickListener onPick) {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(title)
+                .setSingleChoiceItems(items, checked, onPick)
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void addSettingRow(LinearLayout col, String label, String value) {
@@ -2659,6 +3026,9 @@ public class MainActivity extends Activity {
 
     private void updateAppBackground(String url) {
         if (url == null || url.isEmpty()) return;
+        // v1.11.0: in solid mode the blur never runs — no wasted
+        // fetch, and no chance of painting over the solid color.
+        if (isSolidBackground()) return;
         final int seq = ++appBgSeq;
         final String u = url;
         imgIo.execute(() -> {
@@ -2687,6 +3057,9 @@ public class MainActivity extends Activity {
                 final android.graphics.Bitmap bg = small;
                 main.post(() -> {
                     if (seq != appBgSeq) return;
+                    // v1.11.0: a blur job that was already in flight
+                    // when the user switched to solid must not repaint.
+                    if (isSolidBackground()) return;
                     if (appBgView != null) {
                         appBgView.setImageBitmap(bg);
                     }
@@ -2796,6 +3169,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopWorldwideRotation();
         imgIo.shutdownNow();
         super.onDestroy();
     }

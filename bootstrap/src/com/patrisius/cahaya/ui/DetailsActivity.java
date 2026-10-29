@@ -110,14 +110,18 @@ public class DetailsActivity extends Activity {
     }
 
     private void buildUi(MetaDetails d) {
+        // v1.7.0: on phones the poster stacks above the info instead
+        // of beside it — side-by-side left the info column ~50dp wide.
+        boolean phone = PhoneUi.isPhone(this);
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.HORIZONTAL);
-        root.setPadding(dp(28), dp(28), dp(28), dp(28));
+        root.setOrientation(phone ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        root.setPadding(phone ? dp(16) : dp(28), phone ? dp(16) : dp(28),
+                phone ? dp(16) : dp(28), phone ? dp(16) : dp(28));
 
         ImageView poster = new ImageView(this);
-        int pw = dp(220);
-        poster.setLayoutParams(new LinearLayout.LayoutParams(pw, dp(320)));
+        int pw = phone ? dp(160) : dp(220);
+        poster.setLayoutParams(new LinearLayout.LayoutParams(pw, phone ? dp(240) : dp(320)));
         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
         poster.setBackgroundColor(Color.parseColor("#23262B"));
         root.addView(poster);
@@ -125,14 +129,18 @@ public class DetailsActivity extends Activity {
 
         LinearLayout info = new LinearLayout(this);
         info.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        ilp.setMargins(dp(28), 0, 0, 0);
+        LinearLayout.LayoutParams ilp = phone
+                ? new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT)
+                : new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        ilp.setMargins(phone ? 0 : dp(28), phone ? dp(16) : 0, 0, 0);
         root.addView(info, ilp);
 
         TextView title = new TextView(this);
         title.setText(d.name);
-        title.setTextSize(32);
+        title.setTextSize(phone ? 24 : 32);
         title.setTextColor(Color.WHITE);
         info.addView(title);
 
@@ -151,7 +159,8 @@ public class DetailsActivity extends Activity {
         Button play = new Button(this);
         play.setText(d.isSeries() ? "Play S1 E1" : "Play");
         play.setFocusable(true);
-        info.addView(play, new LinearLayout.LayoutParams(dp(220),
+        info.addView(play, new LinearLayout.LayoutParams(
+                phone ? ViewGroup.LayoutParams.MATCH_PARENT : dp(220),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         play.requestFocus();
         play.setOnClickListener(v -> {
