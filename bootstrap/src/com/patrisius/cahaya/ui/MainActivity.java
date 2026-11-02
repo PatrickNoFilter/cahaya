@@ -2859,6 +2859,7 @@ public class MainActivity extends Activity {
 
         Button gBtn = new Button(this);
         gBtn.setFocusable(true);
+        gBtn.setTag("setting:google");
         if (GoogleAccount.isSignedIn(this)) {
             gBtn.setText("Sign out");
             gBtn.setOnClickListener(v -> GoogleAccount.signOut(MainActivity.this,
@@ -2869,12 +2870,14 @@ public class MainActivity extends Activity {
                             Toast.makeText(MainActivity.this,
                                     "Signed out", Toast.LENGTH_SHORT).show();
                             selectMenu(5, false);
+                            refocusSettingRow("google");
                         }
 
                         @Override
                         public void onError(Exception e) {
                             refreshAccountLabel();
                             selectMenu(5, false);
+                            refocusSettingRow("google");
                         }
                     }));
         } else {
@@ -2892,20 +2895,25 @@ public class MainActivity extends Activity {
         dh.setPadding(0, dp(8), 0, dp(4));
         col.addView(dh);
 
-        addSettingOptionRow(col, "Banner auto-change",
-                bannerIntervalSec() + " seconds", v -> {
-            String[] items = new String[9];
-            for (int i = 0; i < 9; i++) items[i] = (i + 2) + " seconds";
-            showSingleChoiceDialog("Banner auto-change", items,
-                    bannerIntervalSec() - 2, (d, which) -> {
-                d.dismiss();
-                displayPrefs().edit()
-                        .putInt("banner_interval_sec", which + 2).apply();
-                // Rotation re-reads the interval on every tick, so a
-                // new value applies on Home without restarting it.
-                selectMenu(5, false);
+        // v1.17.1: the rotating banner is phone-only — the TV home has no
+        // banner to rotate, so this setting doesn't belong on the box.
+        if (phoneMode) {
+            addSettingOptionRow(col, "Banner auto-change",
+                    bannerIntervalSec() + " seconds", v -> {
+                String[] items = new String[9];
+                for (int i = 0; i < 9; i++) items[i] = (i + 2) + " seconds";
+                showSingleChoiceDialog("Banner auto-change", items,
+                        bannerIntervalSec() - 2, (d, which) -> {
+                    d.dismiss();
+                    displayPrefs().edit()
+                            .putInt("banner_interval_sec", which + 2).apply();
+                    // Rotation re-reads the interval on every tick, so a
+                    // new value applies on Home without restarting it.
+                    selectMenu(5, false);
+                    refocusSettingRow("Banner auto-change");
+                });
             });
-        });
+        }
         addSettingOptionRow(col, "Background",
                 isSolidBackground() ? "Solid" : "Blur picture", v -> {
             String[] items = {"Blur picture", "Solid color"};
@@ -2917,6 +2925,7 @@ public class MainActivity extends Activity {
                         .apply();
                 applyBackgroundMode();
                 selectMenu(5, false);
+                refocusSettingRow("Background");
             });
         });
         if (isSolidBackground()) {
@@ -2935,6 +2944,7 @@ public class MainActivity extends Activity {
                             .putString("bg_color", keys[which]).apply();
                     applyBackgroundMode();
                     selectMenu(5, false);
+                    refocusSettingRow("Background color");
                 });
             });
         }
@@ -2949,18 +2959,36 @@ public class MainActivity extends Activity {
         addSettingRow(col, "Installed plugins", String.valueOf(plugins.plugins().size()));
         addSettingRow(col, "Protocol", "Stremio addon protocol (manifest.json)");
         addSettingRow(col, "Player", "libmpv (in-app player)");
-        return col;
+        // v1.17.1: the list is taller than the screen — without a
+        // ScrollView the lower rows were unreachable by D-pad.
+        ScrollView sv = new ScrollView(this);
+        sv.addView(col, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        return sv;
+    }
+
+    /** v1.17.1: after a settings dialog rebuilds the screen, put D-pad
+     *  focus back on the row that opened it — the rebuild destroys the
+     *  focused view, which used to strand focus with nowhere to go. */
+    private void refocusSettingRow(String label) {
+        main.post(() -> {
+            View r = content.findViewWithTag("setting:" + label);
+            if (r != null) r.requestFocus();
+        });
     }
 
     /** v1.11.0: a tappable settings row — label left, current value
-     *  right in accent blue. Works on touch and D-pad (click). */
-    private void addSettingOptionRow(LinearLayout col, String label, String value,
+     *  right in accent blue. Works on touch and D-pad (click).
+     *  v1.17.1: tagged so focus can return to it after a rebuild. */
+    private LinearLayout addSettingOptionRow(LinearLayout col, String label, String value,
             View.OnClickListener onClick) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(dp(4), dp(10), dp(4), dp(10));
         row.setFocusable(true);
         row.setClickable(true);
+        row.setTag("setting:" + label);
         row.setOnClickListener(onClick);
 
         TextView l = new TextView(this);
@@ -2976,6 +3004,7 @@ public class MainActivity extends Activity {
         v.setTextSize(16);
         row.addView(v);
         col.addView(row);
+        return row;
     }
 
     /** v1.11.0: single-choice dialog for a settings option. The

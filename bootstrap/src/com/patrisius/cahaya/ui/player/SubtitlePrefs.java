@@ -23,6 +23,8 @@ public class SubtitlePrefs {
 
     public int size, lift, colorIdx, edge, bgOpacity;
     public boolean bold, background, stripSdh;
+    /** Auto-translate the best available subtitle when none exists in the preferred language. */
+    public boolean autoTranslate;
     /** ISO language to auto-select, or "off". */
     public String preferredLang;
 
@@ -37,6 +39,7 @@ public class SubtitlePrefs {
         bold = sp.getBoolean("sub_bold", false);
         background = sp.getBoolean("sub_bg", false);
         stripSdh = sp.getBoolean("sub_sdh", false);
+        autoTranslate = sp.getBoolean("sub_autotranslate", true);
         preferredLang = sp.getString("sub_lang", defaultLang());
     }
 
@@ -51,7 +54,8 @@ public class SubtitlePrefs {
         sp.edit().putInt("sub_size", size).putInt("sub_lift", lift).putInt("sub_color", colorIdx)
                 .putInt("sub_edge", edge).putInt("sub_bg_opacity", bgOpacity)
                 .putBoolean("sub_bold", bold).putBoolean("sub_bg", background)
-                .putBoolean("sub_sdh", stripSdh).putString("sub_lang", preferredLang).apply();
+                .putBoolean("sub_sdh", stripSdh).putBoolean("sub_autotranslate", autoTranslate)
+                .putString("sub_lang", preferredLang).apply();
     }
 
     public void resetStyle() {

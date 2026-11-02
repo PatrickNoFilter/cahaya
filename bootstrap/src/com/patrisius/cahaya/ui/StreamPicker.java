@@ -47,6 +47,11 @@ import java.util.List;
  * screenshot: PlayIMDb→Torrentio looked wider than
  * Torrentio→4khdhub). The row is centered, so leftover space
  * splits equally to both edges.
+ * v1.12.0: the title shows 2 lines instead of 1 (the whole link
+ * text, not an ellipsis stump). When a focused title is longer
+ * than 2 lines, its hidden text scrolls up automatically so the
+ * full link reads without leaving the picker. Options stay a
+ * uniform 3 lines (2 title + 1 info) when unfocused.
  */
 public class StreamPicker {
 
@@ -134,6 +139,11 @@ public class StreamPicker {
         }
 
         final AlertDialog[] dlgHolder = new AlertDialog[1];
+        // v1.12.0: focused long titles auto-scroll; tracked here so
+        // every scroll stops when the dialog goes away.
+        final android.os.Handler scrollHandler =
+                new android.os.Handler(android.os.Looper.getMainLooper());
+        final List<Runnable> activeScrolls = new ArrayList<>();
         LinearLayout columnsRow = new LinearLayout(activity);
         columnsRow.setOrientation(phone ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
 
@@ -179,11 +189,14 @@ public class StreamPicker {
                         ViewGroup.LayoutParams.WRAP_CONTENT);
                 lp.setMargins(0, 0, 0, dp(activity, 6));
                 opt.setLayoutParams(lp);
+                // v1.12.0: title wraps to 2 lines (was 1) so the
+                // whole link text shows; the info line stays 1.
+                // Every option is still the same height (2+1).
                 final TextView titleV = new TextView(activity);
                 titleV.setText(s.title);
                 titleV.setTextSize(16);
                 titleV.setTextColor(Color.WHITE);
-                titleV.setMaxLines(1);
+                titleV.setMaxLines(2);
                 titleV.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 final TextView subV = new TextView(activity);
                 subV.setText(sub(s));
@@ -195,12 +208,48 @@ public class StreamPicker {
                 opt.addView(subV);
                 opt.setFocusable(true);
                 opt.setClickable(true);
+                final Runnable[] scrollTask = new Runnable[1];
                 opt.setOnFocusChangeListener((v, focused) -> {
                     titleV.setTextColor(focused
                             ? Color.parseColor("#2196F3") : Color.WHITE);
                     subV.setTextColor(focused
                             ? Color.parseColor("#90CAF9")
                             : Color.parseColor("#B0B5BA"));
+                    // v1.12.0: when the cursor lands on a title
+                    // longer than its 2 lines, the hidden text
+                    // scrolls up automatically (pausing at each
+                    // end); unfocusing snaps it back to the top.
+                    if (scrollTask[0] != null) {
+                        scrollHandler.removeCallbacks(scrollTask[0]);
+                        activeScrolls.remove(scrollTask[0]);
+                        scrollTask[0] = null;
+                    }
+                    titleV.scrollTo(0, 0);
+                    if (focused) {
+                        titleV.setEllipsize(null);
+                        int lines = wrappedLines(titleV);
+                        if (lines > 2) {
+                            final int lineH = titleV.getLineHeight();
+                            final int maxY = (lines - 2) * lineH;
+                            final int[] y = {0};
+                            final int[] dir = {1};
+                            final Runnable[] self = new Runnable[1];
+                            self[0] = () -> {
+                                y[0] += dir[0] * lineH;
+                                if (y[0] >= maxY) { y[0] = maxY; dir[0] = -1; }
+                                else if (y[0] <= 0) { y[0] = 0; dir[0] = 1; }
+                                titleV.scrollTo(0, y[0]);
+                                scrollHandler.postDelayed(self[0],
+                                        (y[0] == 0 || y[0] == maxY) ? 1200 : 700);
+                            };
+                            scrollTask[0] = self[0];
+                            activeScrolls.add(self[0]);
+                            scrollHandler.postDelayed(self[0], 800);
+                        }
+                    } else {
+                        titleV.setEllipsize(
+                                android.text.TextUtils.TruncateAt.END);
+                    }
                 });
                 opt.setOnClickListener(v -> {
                     if (dlgHolder[0] != null) dlgHolder[0].dismiss();
@@ -274,6 +323,10 @@ public class StreamPicker {
                 .setTitle(title)
                 .setView(contentView)
                 .setNegativeButton("Cancel", null)
+                .setOnDismissListener(d -> {
+                    for (Runnable r : activeScrolls) scrollHandler.removeCallbacks(r);
+                    activeScrolls.clear();
+                })
                 .create();
         dlgHolder[0] = dlg;
         dlg.show();
@@ -311,6 +364,22 @@ public class StreamPicker {
             sub = sb.toString();
         }
         return sub;
+    }
+
+    /** How many lines the title text needs at the view's current
+     *  width (titles are single-line source text; wrapping makes
+     *  the lines). Used to decide whether the focused auto-scroll
+     *  is needed. */
+    private static int wrappedLines(TextView tv) {
+        CharSequence t = tv.getText();
+        if (t == null || t.length() == 0) return 1;
+        int avail = tv.getWidth() - tv.getPaddingLeft() - tv.getPaddingRight();
+        if (avail <= 0) return 1;
+        float w = tv.getPaint().measureText(t.toString());
+        int lines = (int) Math.ceil(w / avail);
+        int nl = 1;
+        for (int i = 0; i < t.length(); i++) if (t.charAt(i) == '\n') nl++;
+        return Math.max(lines, nl);
     }
 
     /** Null-safe Paint.measureText (titles/hosts can be null). */

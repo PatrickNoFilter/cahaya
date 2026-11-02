@@ -54,7 +54,11 @@ import com.patrisius.cahaya.ui.player.SubtitleLoader;
 import com.patrisius.cahaya.ui.player.SubtitleOverlay;
 import com.patrisius.cahaya.ui.player.SubtitlePrefs;
 import com.patrisius.cahaya.ui.player.SubtitleRanker;
+import com.patrisius.cahaya.ui.player.PauseScreensaver;
+import com.patrisius.cahaya.ui.player.BitmapSubsDecoder;
+import com.patrisius.cahaya.ui.player.HdrProbe;
 import com.patrisius.cahaya.ui.player.SubtitleSelection;
+import com.patrisius.cahaya.ui.player.SubtitleTranslator;
 import com.patrisius.cahaya.ui.player.TimeFmt;
 
 import java.io.File;
@@ -133,6 +137,21 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private List<SubtitleItem> onlineRanked = new ArrayList<>();
     /** Online subtitles currently downloading (guards double clicks). */
     private final Set<String> loadingUrls = new HashSet<>();
+    private final Set<String> translatingUrls = new HashSet<>();
+    private final Map<String, List<SubtitleCue>> translatedCache = new HashMap<>();
+    /** v1.16.2: the translate target is always Indonesian (his request). */
+    private static final String TR_TARGET = "ind";
+    /** v1.17.0: pause screensaver delay. */
+    private static final long SCREENSAVER_MS = 10000;
+    private PauseScreensaver screensaver;
+    private final Runnable armScreensaver = new Runnable() {
+        @Override public void run() {
+            // v1.17.0: 10 s of uninterrupted pause -> info screensaver,
+            // unless the user opened a menu meanwhile.
+            if (paused && screensaver != null && !panel.isOpen())
+                screensaver.show(title, type, videoId, poster, mpvTimePos, mpvDuration);
+        }
+    };
     /** Parsed cues per online subtitle URL, so switching back is instant. */
     private final Map<String, List<SubtitleCue>> cueCache = new HashMap<>();
     /** mpv track ids created by the sub-add fallback (unparseable online files); hidden from "In this video". */
@@ -259,7 +278,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     @Override
     protected void onDestroy() {
         destroyed = true;
-        if (subtitleOverlay != null) subtitleOverlay.stop();
+        if (subtitleOverlay != null) {
+            subtitleOverlay.clearBitmapDecoder();  // v1.19.0: stop the ffmpeg decoder
+            subtitleOverlay.stop();
+        }
         // Save resume position for Continue Watching
         try {
             double pos = mpvTimePos > 0 ? mpvTimePos : manualPos;
@@ -436,6 +458,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panel = new SidePanel(this);
         root.addView(panel, new FrameLayout.LayoutParams(dp(420), -1, Gravity.END));
 
+        // v1.17.0: pause screensaver (movie/series info after 10 s paused)
+        screensaver = new PauseScreensaver(this);
+        root.addView(screensaver, new FrameLayout.LayoutParams(-1, -1));
+
         // Subtitle overlay (drawn by us; mediacodec_embed cannot draw subtitles)
         subtitleOverlay = new SubtitleOverlay(this, root, prefs);
 
@@ -504,7 +530,18 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             MPVLib.setOptionString("ao", "audiotrack,opensles");
             MPVLib.setOptionString("audio-channels", "stereo");
             MPVLib.setOptionString("cache", "yes");
-            MPVLib.setOptionString("cache-secs", "10");
+            // v1.13.0: Nuvio-style buffer tuning (from the Nuvio
+            // source read 2026-10-29). Their player keeps a 15-45s
+            // buffer with a RAM-scaled byte cap; mpv's small
+            // default is why big files felt less fluid here.
+            // cache-secs 10 -> 30, plus a demuxer byte cap of
+            // ~1/10th of device RAM (50-400MB; 2GB box -> 200MB,
+            // matching Nuvio's own table).
+            MPVLib.setOptionString("cache-secs", "30");
+            long totalMb = totalRamMb();
+            long cacheMb = totalMb > 0
+                    ? Math.max(50, Math.min(400, totalMb / 10)) : 150;
+            MPVLib.setOptionString("demuxer-max-bytes", cacheMb + "MiB");
             MPVLib.setOptionString("idle", "yes");
             // mpv's default UA gets bot-blocked by several file hosts
             // (Cloudflare 403 on R2 links); a browser UA is the
@@ -561,13 +598,61 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             mpvTimePos = -1;
             mpvDuration = -1;
             if (subtitleOverlay != null) subtitleOverlay.start();
-            try {
-                MPVLib.command(new String[]{"loadfile", streamUrl});
-            } catch (Throwable t) {
-                Toast.makeText(this, "Couldn't play: " + t, Toast.LENGTH_LONG).show();
-                finish();
+            loadfileProbed(streamUrl, headersMap(streamHeaders), null, null,
+                    () -> {
+                        Toast.makeText(this, "Couldn't play", Toast.LENGTH_LONG).show();
+                        finish();
+                    });
+        }
+    }
+
+    private static java.util.Map<String, String> headersMap(String newlineJoined) {
+        java.util.Map<String, String> m = new java.util.HashMap<>();
+        if (newlineJoined != null) {
+            for (String line : newlineJoined.split("\n")) {
+                int c = line.indexOf(':');
+                if (c > 0) m.put(line.substring(0, c).trim(), line.substring(c + 1).trim());
             }
         }
+        return m;
+    }
+
+    /**
+     * v1.18.0: probe the stream for HDR10+ on a worker thread, then loadfile
+     * with hwdec=no (software) when found, hwdec=mediacodec otherwise. The
+     * box's firmware MediaCodec crashes natively on HDR10+ (2026-11-01) —
+     * software decoding sidesteps it. The probe is capped at 10 s and fails
+     * open to hardware decoding. preLoad runs on the UI thread just before
+     * loadfile (used for the Next-episode switch guard); onOk/onFail after.
+     */
+    private void loadfileProbed(String url, java.util.Map<String, String> headers,
+                                Runnable preLoad, Runnable onOk, Runnable onFail) {
+        new Thread(() -> {
+            boolean sw = false;
+            try {
+                HdrProbe.Result r = HdrProbe.probe(url, headers, 10000);
+                sw = r.hdr10plus;
+                android.util.Log.i("CahayaProbe",
+                        "hdr10plus=" + r.hdr10plus + " via=" + r.hdr10plusPath
+                                + " video=" + r.videoMime
+                                + " subs=" + r.subTracks + " fmt=" + r.videoFormat);
+            } catch (Throwable ignored) {
+            }
+            final boolean useSw = sw;
+            main.post(() -> {
+                if (destroyed) return;
+                if (preLoad != null) preLoad.run();
+                try {
+                    MPVLib.setOptionString("hwdec", useSw ? "no" : "mediacodec");
+                    if (useSw) hint("HDR10+ detected — software decoding");
+                    MPVLib.command(new String[]{"loadfile", url});
+                } catch (Throwable t) {
+                    if (onFail != null) onFail.run();
+                    return;
+                }
+                if (onOk != null) onOk.run();
+            });
+        }, "probe-dispatch").start();
     }
 
     /** mpv reports FILE_LOADED (event 8) once the demuxer is open and tracks are known. */
@@ -885,24 +970,30 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         lastLiveSaveMs = 0;
         lastLiveSavePos = -1;
         // v1.5.3: arm the switch guard BEFORE loadfile — the outgoing
-        // file's END_FILE arrives around the replacement.
-        switchingStream = true;
-        final int gen = ++switchGeneration;
-        main.postDelayed(() -> {
-            if (gen == switchGeneration) switchingStream = false;
-        }, 10000);
-        try {
-            MPVLib.command(new String[]{"loadfile", url});
-        } catch (Throwable t) {
-            Toast.makeText(this, "Couldn't play next episode",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-        try { MPVLib.setPropertyBoolean("pause", false); } catch (Throwable ignored) {}
-        fetchOnlineSubtitles();
-        showController();
-        hint("Next: " + nTitle);
-        updateProgress();
+        // file's END_FILE arrives around the replacement. (v1.18.0: the
+        // guard is armed in preLoad so its 10 s window covers the actual
+        // loadfile, not the HDR probe.)
+        loadfileProbed(url, headers != null ? headers
+                        : java.util.Collections.<String, String>emptyMap(),
+                () -> {
+                    switchingStream = true;
+                    final int gen = ++switchGeneration;
+                    main.postDelayed(() -> {
+                        if (gen == switchGeneration) switchingStream = false;
+                    }, 10000);
+                },
+                () -> {
+                    try {
+                        MPVLib.setPropertyBoolean("pause", false);
+                    } catch (Throwable ignored) {
+                    }
+                    fetchOnlineSubtitles();
+                    showController();
+                    hint("Next: " + nTitle);
+                    updateProgress();
+                },
+                () -> Toast.makeText(this, "Couldn't play next episode",
+                        Toast.LENGTH_LONG).show());
     }
 
     private void seekRel(int seconds) {
@@ -924,14 +1015,29 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void cycleAspect() {
         aspectMode = (aspectMode + 1) % ASPECT_NAMES.length;
         try {
-            // v1.6.0: mpv props mirror the swapped layout modes
-            // (ignored by mediacodec_embed, but kept consistent).
+            // v1.12.0: modes swapped back per his correction — Fit
+            // shows the whole video (keepaspect), Stretch fills the
+            // screen. (Ignored by mediacodec_embed, kept consistent.)
             MPVLib.setPropertyDouble("panscan", aspectMode == 1 ? 1.0 : 0.0);
-            MPVLib.setPropertyBoolean("keepaspect", aspectMode != 0);
+            MPVLib.setPropertyBoolean("keepaspect", aspectMode != 2);
         } catch (Throwable ignored) {}
         applyAspect();
         hint("Aspect: " + ASPECT_NAMES[aspectMode]);
         scheduleHide();
+    }
+
+    /** Total device RAM in MB, 0 when unreadable (v1.13.0: sizes the demuxer cache). */
+    private long totalRamMb() {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager)
+                    getSystemService(android.content.Context.ACTIVITY_SERVICE);
+            android.app.ActivityManager.MemoryInfo mi =
+                    new android.app.ActivityManager.MemoryInfo();
+            am.getMemoryInfo(mi);
+            return mi.totalMem / (1024 * 1024);
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /** Aspect modes that actually work with vo=mediacodec_embed.
@@ -940,9 +1046,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
      *  Android compositor scales each frame to the SurfaceView size
      *  and mpv's aspect properties have no visible effect. So the
      *  modes are implemented here, by resizing the SurfaceView:
-     *  Fit = fill the screen, Zoom = fill the screen and crop
-     *  the overflow, Stretch = whole video visible (v1.6.0: Fit
-     *  and Stretch swapped per his correction). Resizing
+     *  Fit = whole video visible with bars, Zoom = fill the screen
+     *  and crop the overflow, Stretch = fill the screen
+     *  (v1.12.0: Fit and Stretch swapped back per his correction). Resizing
      *  the view does not destroy the Surface (only surfaceChanged
      *  fires, which is a no-op), so playback continues untouched. */
     private void readVideoAspect() {
@@ -979,20 +1085,19 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 (FrameLayout.LayoutParams) surfaceView.getLayoutParams();
         int sw = getResources().getDisplayMetrics().widthPixels;
         int sh = getResources().getDisplayMetrics().heightPixels;
-        // v1.6.0: Fit and Stretch swapped per his correction —
-        // Fit now fills the screen (old Stretch), Stretch now
-        // shows the whole video with bars (old Fit). Zoom
-        // unchanged. A garbage/unknown aspect still falls back
-        // to fill, so the surface can never again size to 0
-        // wide (Fit went black) or MAXINT tall.
-        if (aspectMode == 0 || videoAspect <= 0.2 || videoAspect >= 5.0) {
-            // Fit, or unknown/invalid video size: fill the screen.
+        // v1.12.0: Fit and Stretch swapped back per his correction —
+        // Fit shows the whole video with bars, Stretch fills the
+        // screen. Zoom unchanged. A garbage/unknown aspect still
+        // falls back to fill, so the surface can never size to 0
+        // wide or MAXINT tall.
+        if (aspectMode == 2 || videoAspect <= 0.2 || videoAspect >= 5.0) {
+            // Stretch, or unknown/invalid video size: fill the screen.
             lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
             lp.height = ViewGroup.LayoutParams.MATCH_PARENT;
         } else {
             double screenAspect = (double) sw / sh;
             int w, h;
-            if (aspectMode == 2) { // Stretch: whole video visible
+            if (aspectMode == 0) { // Fit: whole video visible
                 if (videoAspect > screenAspect) { w = sw; h = (int) (sw / videoAspect); }
                 else { h = sh; w = (int) (sh * videoAspect); }
             } else { // Zoom: fill the screen, crop the overflow
@@ -1099,6 +1204,19 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
      *  controller is hidden, so this branch never runs for them. */
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // v1.17.0: the pause screensaver eats the first keypress (classic
+        // screensaver); play keys dismiss it AND act, so one press resumes.
+        if (screensaver != null && screensaver.isShowing()
+                && event.getAction() == KeyEvent.ACTION_DOWN) {
+            screensaver.hide();
+            int kc = event.getKeyCode();
+            if (kc == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE || kc == KeyEvent.KEYCODE_MEDIA_PLAY
+                    || kc == KeyEvent.KEYCODE_SPACE || kc == KeyEvent.KEYCODE_P) {
+                // fall through to the normal handling below
+            } else {
+                return true;
+            }
+        }
         if (event.getAction() == KeyEvent.ACTION_DOWN
                 && (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER
                     || event.getKeyCode() == KeyEvent.KEYCODE_ENTER)
@@ -1208,6 +1326,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panelKind = kind;
         panelOpener = opener;
         main.removeCallbacks(hideController);
+        if (screensaver != null) screensaver.hide();   // v1.17.0: never cover a menu
         // v1.7.3: fade the bar out instead of cutting it — the instant
         // vanish flashed the video bright on every menu open. The
         // generation guard keeps a stale end action from hiding the
@@ -1233,6 +1352,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         panelKind = P_NONE;
         showController();
         if (panelOpener != null) panelOpener.requestFocus();
+        // v1.17.0: a menu closed mid-pause re-arms the screensaver timer.
+        main.removeCallbacks(armScreensaver);
+        if (paused) main.postDelayed(armScreensaver, SCREENSAVER_MS);
     }
 
     private void rebuildPanel() {
@@ -1302,9 +1424,26 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 panel.note("Tracks marked \"Image\" can't be drawn here; choosing one loads the matching online subtitle instead.");
         }
 
+        // v1.16.2: manual trigger. The auto path only fires before anything is
+        // chosen; this row lets the user translate on demand. The target is
+        // always Indonesian, and the row shows whenever no Indonesian subtitle
+        // exists — regardless of the auto-select language.
+        if (prefs.autoTranslate && !hasIndonesian(tracks, onlineRanked) && !onlineRanked.isEmpty()) {
+            panel.section("Auto-translate");
+            SubtitleItem src = null;
+            for (SubtitleItem s : onlineRanked)
+                if (LangUtil.matches(s.lang, "eng")) { src = s; break; }
+            if (src == null) src = onlineRanked.get(0);
+            final SubtitleItem fsrc = src;
+            final boolean busy = translatingUrls.contains(fsrc.url);
+            panel.row("Indonesian (auto)",
+                    busy ? "Translating…" : "Translate from " + LangUtil.display(fsrc.lang),
+                    sel.isTranslated(fsrc.url),
+                    () -> { if (!busy) { autoSubDone = true; translateOnlineSubtitle(fsrc); } });
+        }
+
         panel.section("Online subtitles");
-        if (subsLoading) panel.note("Searching your addons…");
-        List<SubtitleItem> shown = new ArrayList<>(onlineRanked);
+        if (subsLoading) panel.note("Searching your addons…");        List<SubtitleItem> shown = new ArrayList<>(onlineRanked);
         if (shown.isEmpty() && !subsLoading) {
             panel.note(videoId == null || videoId.isEmpty()
                     ? "Online search isn't available for this stream."
@@ -1317,12 +1456,16 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             String lang = LangUtil.display(s.lang);
             int n = perLang.containsKey(lang) ? perLang.get(lang) + 1 : 1;
             perLang.put(lang, n);
-            boolean active = sel.isOnline(s.url);
+            boolean active = sel.isOnline(s.url) || sel.isTranslated(s.url);
             if (i >= limit && !active) continue;          // the one in use stays visible when collapsed
             String detail = s.label == null ? "" : s.label;
             int cut = detail.indexOf("· ");
             if (cut >= 0) detail = detail.substring(cut + 2);
             if (loadingUrls.contains(s.url)) detail = "Loading…";
+            if (translatingUrls.contains(s.url)) detail = "Translating…";
+            else if (sel.isTranslated(s.url))
+                detail = (detail.isEmpty() ? "" : detail + " · ")
+                        + LangUtil.display(prefs.preferredLang) + " (auto)";
             panel.row(n > 1 ? lang + " " + n : lang, detail, active, () -> useOnlineSubtitle(s));
         }
         if (limit < shown.size()) {
@@ -1350,28 +1493,81 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     }
 
     /**
-     * PGS/VobSub can't be drawn without mpv's own video renderer. Don't tick something that can't
-     * show: keep the current choice and switch to the best online subtitle in that track's language.
+     * v1.19.0: PGS/VobSub/DVB/XSUB. Try the in-app ffmpeg bitmap decoder
+     * first; fall back to online subtitles if it can't open the track.
      */
     private void useOnlineInsteadOfImage(MpvTrack t) {
+        if (startBitmapSubs(t)) return;
+        // Bitmap decoder failed: fall back to online subtitles as before.
         String lang = (t.lang == null || t.lang.isEmpty()) ? prefs.preferredLang : t.lang;
         SubtitleItem best = SubtitleRanker.bestFor(onlineRanked, lang);
         if (best != null) {
-            hint("Image subtitles can't be shown, using online " + LangUtil.display(lang));
+            hint("Image subtitles can't be decoded, using online " + LangUtil.display(lang));
             useOnlineSubtitle(best);
             autoSubDone = true;
         } else if (subsLoading) {
             wantLang = lang;
-            hint("Image subtitles can't be shown. Searching online for " + LangUtil.display(lang) + "…");
+            hint("Image subtitles can't be decoded. Searching online for " + LangUtil.display(lang) + "…");
         } else {
-            hint("Image subtitles can't be shown, and no online " + LangUtil.display(lang) + " subtitle was found");
+            hint("Image subtitles can't be decoded, and no online " + LangUtil.display(lang) + " subtitle was found");
         }
+    }
+
+    /**
+     * v1.19.0: start the ffmpeg bitmap decoder for an image subtitle track.
+     * Returns true if the decoder opened the track.
+     */
+    private boolean startBitmapSubs(MpvTrack t) {
+        subtitleOverlay.clearBitmapDecoder();
+        final BitmapSubsDecoder[] decHolder = new BitmapSubsDecoder[1];
+        final boolean[] ok = new boolean[1];
+        // Open on a worker thread; the open does network I/O.
+        Thread th = new Thread(() -> {
+            try {
+                BitmapSubsDecoder dec = new BitmapSubsDecoder();
+                ok[0] = dec.open(streamUrl, streamHeaders, t.codec, t.lang);
+                if (ok[0]) decHolder[0] = dec;
+                else { try { dec.close(); } catch (Throwable ignored) {} }
+            } catch (Throwable th2) {
+                android.util.Log.w("CahayaSubs", "bitmap decoder failed", th2);
+                ok[0] = false;
+            }
+        }, "bitmap-subs-open");
+        th.start();
+        try {
+            th.join(15000);
+        } catch (InterruptedException ignored) {
+        }
+        if (!ok[0] || decHolder[0] == null) {
+            return false;
+        }
+        BitmapSubsDecoder dec = decHolder[0];
+        // Video size for bitmap scaling (PGS coords are video-frame pixels).
+        try {
+            String vw = MPVLib.getPropertyString("video-params/w");
+            String vh = MPVLib.getPropertyString("video-params/h");
+            if (vw != null && vh != null) {
+                subtitleOverlay.setVideoSize(Integer.parseInt(vw), Integer.parseInt(vh));
+            }
+        } catch (Throwable ignored) {}
+        sel = SubtitleSelection.embedded(t.id);
+        subtitleOverlay.setCues(null);
+        subtitleOverlay.setBitmapDecoder(dec);
+        subtitleOverlay.setSubtitlesOn(true);
+        try {
+            MPVLib.setPropertyString("sid", "no");   // mpv can't draw it; we do
+            MPVLib.setPropertyBoolean("sub-visibility", false);
+        } catch (Throwable ignored) {}
+        hint("Subtitles: " + t.label() + " (image)");
+        updateSubsButton(true);
+        return true;
     }
 
     private void disableSubtitles() {
         diag("subtitles off");
         sel = SubtitleSelection.OFF;
         wantLang = null;
+        subtitleOverlay.clearBitmapDecoder();  // v1.19.0
         subtitleOverlay.setCues(null);
         subtitleOverlay.setSubtitlesOn(false);
         try {
@@ -1451,6 +1647,81 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         schedulePanelRefresh();
     }
 
+    /** v1.16.2: true when an Indonesian subtitle exists (drawable embedded text track or online). */
+    private static boolean hasIndonesian(List<MpvTrack> subs, List<SubtitleItem> online) {
+        if (subs != null)
+            for (MpvTrack t : subs)
+                if (LangUtil.matches(t.lang, TR_TARGET) && !t.isImage()) return true;
+        if (online != null)
+            for (SubtitleItem s : online)
+                if (LangUtil.matches(s.lang, TR_TARGET)) return true;
+        return false;
+    }
+
+    /**
+     * v1.16.2: machine-translate an online subtitle into Indonesian
+     * when none exists. Same load-then-apply shape as
+     * useOnlineSubtitle, with translation between parse and apply; the result
+     * is cached on disk so rewatches never re-translate. Translated cues live
+     * in their own cache so they can never leak into the untranslated path.
+     */
+    private void translateOnlineSubtitle(final SubtitleItem s) {
+        List<SubtitleCue> cached = translatedCache.get(s.url);
+        if (cached != null) { applyTranslated(s, cached); return; }
+        if (!loadingUrls.add(s.url)) return;
+        final SubtitleSelection prev = sel;
+        sel = SubtitleSelection.translated(s.url);
+        translatingUrls.add(s.url);
+        wantLang = null;
+        hint("Translating subtitles to " + LangUtil.display(TR_TARGET) + "…");
+        rebuildPanel();
+        new Thread(() -> {
+            try {
+                final File f = SubtitleLoader.fetch(getApplicationContext(), s.url, s.lang);
+                final String text = readUtf8(f);
+                final List<SubtitleCue> cues = CueParser.parse(text);
+                final List<SubtitleCue> tr = SubtitleTranslator.translate(
+                        getApplicationContext(), s.url, cues, TR_TARGET);
+                main.post(() -> {
+                    loadingUrls.remove(s.url);
+                    translatingUrls.remove(s.url);
+                    if (destroyed) return;
+                    if (!tr.isEmpty()) translatedCache.put(s.url, tr);
+                    if (sel.isTranslated(s.url)) applyTranslated(s, tr);
+                    else rebuildPanel();
+                });
+            } catch (Exception e) {
+                diag("subtitle translation failed: " + e);
+                main.post(() -> {
+                    loadingUrls.remove(s.url);
+                    translatingUrls.remove(s.url);
+                    if (sel.isTranslated(s.url)) {
+                        // Fall back to the untranslated subtitle rather than silence.
+                        sel = prev;
+                        hint("Translation failed, using " + LangUtil.display(s.lang));
+                        useOnlineSubtitle(s);
+                    } else rebuildPanel();
+                });
+            }
+        }, "sub-translate").start();
+    }
+
+    private void applyTranslated(SubtitleItem s, List<SubtitleCue> cues) {
+        sel = SubtitleSelection.translated(s.url);
+        autoSubDone = true;
+        subtitleOverlay.setSubtitlesOn(true);
+        if (!cues.isEmpty()) {
+            diag("translated subtitle " + LangUtil.display(TR_TARGET)
+                    + " (from " + LangUtil.display(s.lang) + "): " + cues.size() + " cues");
+            subtitleOverlay.setCues(cues);
+            subtitleOverlay.setDelayMs(subDelayMs);
+            try { MPVLib.setPropertyString("sid", "no"); } catch (Throwable ignored) {}
+        }
+        hint("Subtitles: " + LangUtil.display(TR_TARGET) + " (auto-translated)");
+        updateSubsButton(true);
+        schedulePanelRefresh();
+    }
+
     private static String readUtf8(File f) throws java.io.IOException {
         try (java.io.FileInputStream in = new java.io.FileInputStream(f);
              java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream()) {
@@ -1508,6 +1779,23 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         if (pick != null) { selectEmbedded(pick); autoSubDone = true; return; }
         SubtitleItem best = SubtitleRanker.bestFor(onlineRanked, pl);
         if (best != null) { useOnlineSubtitle(best); autoSubDone = true; return; }
+        // v1.16.0: no subtitle in the preferred language anywhere (embedded or
+        // online) — machine-translate the best available online subtitle
+        // (English preferred) when the toggle is on.
+        // v1.16.2: no preferred-language subtitle — translate the best
+        // available online subtitle to Indonesian when none exists at all.
+        // v1.16.1: only when every source has answered — otherwise we'd
+        // translate English while an Indonesian subtitle is still loading.
+        if (prefs.autoTranslate && !subsLoading && !hasIndonesian(subs, onlineRanked)
+                && !onlineRanked.isEmpty()) {
+            SubtitleItem src = null;
+            for (SubtitleItem s : onlineRanked)
+                if (LangUtil.matches(s.lang, "eng")) { src = s; break; }
+            if (src == null) src = onlineRanked.get(0);
+            translateOnlineSubtitle(src);
+            autoSubDone = true;
+            return;
+        }
         if (sel.isOff()) syncSelectionFromMpv(subs);                  // show truthfully what mpv picked meanwhile
         if (!subsLoading) autoSubDone = true;                         // nothing matched and nothing more is coming
     }
@@ -1604,6 +1892,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             prefs.preferredLang = choices.get((i + dir + choices.size()) % choices.size());
             prefs.save();
         }, null);
+        toggle("Auto-translate subtitles", () -> prefs.autoTranslate, v -> prefs.autoTranslate = v);
         panel.row("Reset appearance", null, false, () -> { prefs.resetStyle(); styleChanged(); rebuildPanel(); });
         panel.end(restore);
     }
@@ -1818,6 +2107,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 paused = value;
                 playBtn.setIcon(value ? R.drawable.ic_player_play : R.drawable.ic_player_pause);
                 if (value) { saveCurrentProgress(); if (!panel.isOpen()) showController(); } else scheduleHide();
+                // v1.17.0: pause screensaver — arm on pause, stand down on play.
+                main.removeCallbacks(armScreensaver);
+                if (value) main.postDelayed(armScreensaver, SCREENSAVER_MS);
+                else if (screensaver != null) screensaver.hide();
             });
         } else if ("paused-for-cache".equals(property)) {
             main.post(() -> { buffering = value; updateProgress(); });

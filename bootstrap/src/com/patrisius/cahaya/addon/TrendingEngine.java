@@ -33,7 +33,8 @@ import java.util.regex.Pattern;
  * Own trending lists (v1.2.0): merged from the keyless sources validated
  * by live crawling on 2026-10-26, instead of any single addon's catalog.
  *
- * Rows: worldwide, korean, japanese, chinese, hollywood, hollywoodMovies.
+ * Rows: worldwide, tv2026, movies2026, kdrama, jdrama, cdrama,
+ * korean, japanese, chinese, hollywood, hollywoodMovies.
  * Worldwide (v1.9.0) is the streaming-combined row: Netflix's official
  * global weekly charts (Tudum films / films-non-english / tv /
  * tv-non-english) + Prime's official weekly worldwide Originals
@@ -106,10 +107,12 @@ import java.util.regex.Pattern;
 public class TrendingEngine {
 
     public static final String[] ROW_KEYS = {
-            "worldwide", "korean", "japanese", "chinese", "hollywood", "hollywoodMovies"
+            "worldwide", "tv2026", "movies2026", "kdrama", "jdrama", "cdrama",
+            "korean", "japanese", "chinese", "hollywood", "hollywoodMovies"
     };
     public static final String[] ROW_TITLES = {
-            "Trending Worldwide", "Trending Korean", "Trending Japanese", "Trending Chinese",
+            "Trending Worldwide", "TV Shows 2026", "Movies 2026", "Korean Drama", "Japanese Drama",
+            "Chinese Drama", "Trending Korean", "Trending Japanese", "Trending Chinese",
             "Trending Hollywood", "Trending Hollywood Movies"
     };
 
@@ -495,6 +498,76 @@ public class TrendingEngine {
     private static final Pattern IMDB_TITLE = Pattern.compile(
             "\"titleText\":\\s*\\{\\s*\"text\":\\s*\"([^\"]+)\"");
 
+    /** IMDb user list -> titles in list order (best effort).
+     *  Verified 2026-10-30: IMDb's WAF 202-blocks /list/ AND
+     *  /chart/ pages from both datacenter and home IPs (the
+     *  box's own trending cache had tv2026=0; phone curl showed
+     *  202 on /list/ and /chart/tvmeter/), so lists go through
+     *  the jina reader mirror — one fetch per 12h cache cycle.
+     *  Three markdown shapes seen: "1. Title",
+     *  "#### [1. Title](...)", and image alt
+     *  "Image N: [actors in ]Title (Year)". Direct fetch is
+     *  still tried first in case the WAF ever lifts. */
+    private static final Pattern JINA_HDR =
+            Pattern.compile("^####\\s*\\[\\d+\\.\\s+(.+?)\\]\\(");
+    private static final Pattern JINA_NUM =
+            Pattern.compile("^(\\d+)\\.\\s+(.+?)\\s*$");
+    private static final Pattern JINA_ALT =
+            Pattern.compile("!\\[Image \\d+: [^\\]]*\\bin\\s+([^\\[\\]]+?)\\s+\\(\\d{4}");
+    private static final Pattern JINA_ALT2 =
+            Pattern.compile("!\\[Image \\d+:\\s*([^\\[\\]]+?)\\s+\\(\\d{4}");
+
+    private static List<Entry> imdbList(String listId, int priority) {
+        List<Entry> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        // Direct first (precise titleText JSON when reachable)...
+        try {
+            String body = fetch("https://www.imdb.com/list/" + listId + "/");
+            Matcher m = IMDB_TITLE.matcher(body);
+            while (m.find() && out.size() < 60) {
+                String key = normalize(m.group(1));
+                if (key.isEmpty() || !seen.add(key)) continue;
+                out.add(new Entry(m.group(1), null, priority));
+            }
+        } catch (Exception ignored) {
+        }
+        // ...jina mirror fallback (markdown).
+        if (out.size() < 3) {
+            try {
+                String body = fetch("https://r.jina.ai/https://www.imdb.com/list/"
+                        + listId + "/");
+                for (String line : body.split("\n")) {
+                    if (out.size() >= 60) break;
+                    String name = null;
+                    Matcher h = JINA_HDR.matcher(line);
+                    if (h.find()) {
+                        name = h.group(1);
+                    } else {
+                        Matcher n = JINA_NUM.matcher(line);
+                        if (n.matches()) {
+                            name = n.group(2);
+                        } else {
+                            Matcher a = JINA_ALT.matcher(line);
+                            if (a.find()) name = a.group(1);
+                            else {
+                                Matcher a2 = JINA_ALT2.matcher(line);
+                                if (a2.find()) name = a2.group(1);
+                            }
+                        }
+                    }
+                    if (name == null) continue;
+                    name = name.replaceAll("\\[|\\]", "").trim();
+                    if (name.isEmpty() || name.startsWith("Image")) continue;
+                    String key = normalize(name);
+                    if (key.isEmpty() || !seen.add(key)) continue;
+                    out.add(new Entry(name, null, priority));
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return out;
+    }
+
     /** IMDb chart page -> titles in chart order (best effort). */
     private static List<Entry> imdb(String path, int priority) {
         List<Entry> out = new ArrayList<>();
@@ -750,7 +823,7 @@ public class TrendingEngine {
     private static Map<String, List<CatalogItem>> fetchAllParallel() {
         final List<SourceList> sources = new ArrayList<>();
         ExecutorService pool = Executors.newFixedThreadPool(8);
-        final CountDownLatch latch = new CountDownLatch(29);
+        final CountDownLatch latch = new CountDownLatch(34);
         // The fetchAll() list is rebuilt here with per-source tasks so
         // a slow source cannot stall the rest.
         List<Runnable> tasks = new ArrayList<>();
@@ -794,6 +867,28 @@ public class TrendingEngine {
         }));
         tasks.add(task(sources, latch, "worldwide", true, 2, new Supplier() {
             public List<Entry> get() { return viuIndonesia(2); }
+        }));
+        // v1.14.0: IMDb user-list row — "TV Shows 2026"
+        // (ls594092186, curated list of 2026 scripted series).
+        // Like every row, entries resolve through Cinemeta/TMDB
+        // in resolveRows: only titles with a picture + info stay.
+        tasks.add(task(sources, latch, "tv2026", false, 2, new Supplier() {
+            public List<Entry> get() { return imdbList("ls594092186", 2); }
+        }));
+        // v1.15.0: four more IMDb-list rows (his "crawl to get it").
+        // Lists verified 2026-10-30 via the jina reader mirror
+        // (IMDb WAF-blocks /list/ from any IP we tested).
+        tasks.add(task(sources, latch, "movies2026", false, 2, new Supplier() {
+            public List<Entry> get() { return imdbList("ls520304175", 2); }
+        }));
+        tasks.add(task(sources, latch, "kdrama", false, 2, new Supplier() {
+            public List<Entry> get() { return imdbList("ls080171918", 2); }
+        }));
+        tasks.add(task(sources, latch, "jdrama", false, 2, new Supplier() {
+            public List<Entry> get() { return imdbList("ls066476306", 2); }
+        }));
+        tasks.add(task(sources, latch, "cdrama", false, 2, new Supplier() {
+            public List<Entry> get() { return imdbList("ls099575086", 2); }
         }));
         tasks.add(task(sources, latch, "korean", false, 1, new Supplier() {
             public List<Entry> get() {
@@ -961,8 +1056,8 @@ public class TrendingEngine {
                 for (String key : ROW_KEYS) {
                     final List<CatalogItem> cands = rows.get(key);
                     if (cands == null) continue;
-                    final String type = "hollywoodMovies".equals(key)
-                            ? "movie" : "series";
+                    final String type = ("hollywoodMovies".equals(key)
+                            || "movies2026".equals(key)) ? "movie" : "series";
                     final CatalogItem[] out = new CatalogItem[cands.size()];
                     ExecutorService pool = Executors.newFixedThreadPool(8);
                     final CountDownLatch latch =
