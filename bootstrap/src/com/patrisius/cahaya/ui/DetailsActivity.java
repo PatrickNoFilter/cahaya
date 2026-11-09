@@ -85,6 +85,30 @@ public class DetailsActivity extends Activity {
         mgr = ((CahayaApp) getApplication()).addons();
         plugins = new PluginManager(this, mgr);
 
+        // v1.26.4: MovieBox fallback metadata, passed by MainActivity
+        // for titles no catalog resolves (e.g. Alas Roban, which
+        // Cinemeta does not carry) — build Details from it directly,
+        // no /meta fetch. Streams still gather by title/year, so the
+        // MovieBox providers return playable links.
+        String mbMeta = getIntent().getStringExtra("mb_meta");
+        if (mbMeta != null) {
+            try {
+                org.json.JSONObject o = new org.json.JSONObject(mbMeta);
+                details = MetaDetails.fromMovieBox(itemId, itemType,
+                        o.optString("name", ""),
+                        o.optString("poster", ""),
+                        o.optString("desc", ""),
+                        o.optString("year", ""),
+                        o.optString("genres", ""),
+                        o.optString("rating", ""),
+                        o.optInt("episodes", 0));
+                buildUi(details);
+                return;
+            } catch (Exception ignored) {
+                // fall through to the /meta fetch
+            }
+        }
+
         TextView loading = new TextView(this);
         loading.setText("Loading details…");
         loading.setTextColor(Color.GRAY);
@@ -171,6 +195,7 @@ public class DetailsActivity extends Activity {
             }
         });
 
+
         if (d.isSeries()) {
             TextView eh = new TextView(this);
             eh.setText("Episodes (" + d.videos.size() + ")");
@@ -225,10 +250,21 @@ public class DetailsActivity extends Activity {
                 enabledPlugins.add(p);
             }
         }
-        // +1: the in-app FibWatch scraper (3rd way, no server, no JS).
-        // +2: the WebView JS scrapers (2nd way, 4khdhub + playimdb).
-        final AtomicInteger pending =
-                new AtomicInteger(addonUrls.size() + enabledPlugins.size() + 3);
+        // v1.23.0: pending counts EVERY counted source exactly —
+        // addons + plugins + FibWatch (1) + JS scrapers (array length).
+        // The old "+3" dated from 2 JS providers; with 4 providers the
+        // picker fired after 3 of 5 completions and dropped the late
+        // ones. The site sniffer count is added below (addAndGet) once
+        // collect exists; all completions post to main, so none can
+        // fire before this method returns.
+        String[] jsProviders = {
+                JsScraperRunner.PROVIDER_4KHDHUB,
+                JsScraperRunner.PROVIDER_PLAYIMDB,
+                JsScraperRunner.PROVIDER_MOVIEBOX,
+                JsScraperRunner.PROVIDER_MOVIEBOX_TV,
+        };
+        final AtomicInteger pending = new AtomicInteger(
+                addonUrls.size() + enabledPlugins.size() + 1 + jsProviders.length);
         if (pending.get() == 0) {
             progress.dismiss();
             Toast.makeText(this, "No addons or plugins installed", Toast.LENGTH_SHORT).show();
@@ -313,9 +349,11 @@ public class DetailsActivity extends Activity {
                     }
                 });
         // WebView JS scrapers (2nd way): each provider runs in its own
-        // headless WebView. Needs Cinemeta's moviedb_id; if the meta
-        // has none, the runner fails fast and contributes nothing.
-        // Fail-soft: a dead WebView never blocks the picker.
+        // headless WebView. 4khdhub/PlayIMDb need Cinemeta's moviedb_id;
+        // the MovieBox providers search by title/year and run without
+        // it (v1.26.4 — a fallback Details has no moviedb_id, and its
+        // MovieBox links are the whole point). Fail-soft: a dead
+        // WebView never blocks the picker.
         // v1.5.0: TMDB addon meta carries no moviedbId — derive the
         // numeric id from a tmdb: id so the JS scrapers still run.
         int jsMovieDbId = details.moviedbId;
@@ -326,14 +364,10 @@ public class DetailsActivity extends Activity {
             } catch (Exception ignored) {
             }
         }
-        String[] jsProviders = {
-                JsScraperRunner.PROVIDER_4KHDHUB,
-                JsScraperRunner.PROVIDER_PLAYIMDB,
-        };
         for (String pid : jsProviders) {
             final String providerId = pid;
             new JsScraperRunner(this, providerId).run(jsMovieDbId, itemType,
-                    scraperSeason, scraperEpisode,
+                    scraperSeason, scraperEpisode, details.name, scraperYear,
                     new JsScraperRunner.Callback() {
                         @Override
                         public void onResult(List<StreamItem> items) {
@@ -374,7 +408,7 @@ public class DetailsActivity extends Activity {
             double resume = getIntent().getDoubleExtra("resume_pos", 0);
             if (resume > 0) i.putExtra("start_pos", resume);
             startActivity(i);
-        });
+        }, PlayerActivity.lastPlayedUrl(this, videoId), "Last played");
     }
 
     /** Nuvio-style: stream the torrent through our own engine. */
@@ -455,7 +489,7 @@ public class DetailsActivity extends Activity {
                 c.setReadTimeout(30000);
                 c.setRequestProperty("User-Agent", "Cahaya/0.7.0 (Android TV)");
                 InputStream in = c.getInputStream();
-                final Bitmap bmp = BitmapFactory.decodeStream(in);
+                final Bitmap bmp = PosterUtil.decodeSampled(in, 960);
                 in.close();
                 if (bmp != null) {
                     memCache.put(url, bmp);

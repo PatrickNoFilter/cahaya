@@ -18,7 +18,7 @@ JDK=/home/hatch/workspace/jdk/jdk-17.0.20.1+1/bin
 export PATH="$JDK:$PATH"   # javac, keytool, and java (needed by d8)
 KS=/home/hatch/workspace/cahaya/keystore/cahaya.jks
 KSPASS="cahaya01"
-APK="$ROOT/Cahaya-v1.19.1.apk"
+APK="$ROOT/Cahaya-v1.33.1.apk"
 LTJAR="$ROOT/libs/lt4j.jar"
 LTSO64="$ROOT/jniLibs/arm64-v8a/libtorrent4j.so"
 LTSO32="$ROOT/jniLibs/armeabi-v7a/libtorrent4j.so"
@@ -38,7 +38,7 @@ echo "== aapt2 link =="
 $BT/aapt2 link -o "$B/base.apk" -I "$AJAR" \
     --manifest "$ROOT/AndroidManifest.xml" \
     --min-sdk-version 26 --target-sdk-version 34 \
-    --version-code 100 --version-name "1.19.1" \
+    --version-code 131 --version-name "1.33.1" \
     --java "$B/gen" \
     "$B/flats.zip"
 
@@ -63,13 +63,18 @@ with zipfile.ZipFile(apk, 'a', zipfile.ZIP_DEFLATED) as z:
             z.write(os.path.join(dexdir, f), f)
             print("  dex added:", f)
     # native libs must be stored uncompressed for the loader
-    # include all .so from jniLibs (libtorrent4j + mpv + ffmpeg)
+    # include all .so from jniLibs (libtorrent4j + mpv + ffmpeg + python)
     import glob
     for abi in ['arm64-v8a', 'armeabi-v7a']:
         for so in sorted(glob.glob(os.path.join(root, 'jniLibs', abi, '*.so'))):
             name = 'lib/' + abi + '/' + os.path.basename(so)
             z.write(so, name, compress_type=zipfile.ZIP_STORED)
             print("  so added:", name)
+    # yt-dlp script as an asset (v1.33.0: bundled resolver)
+    ytdlp = os.path.join(root, 'assets', 'yt-dlp')
+    if os.path.exists(ytdlp):
+        z.write(ytdlp, 'assets/yt-dlp', compress_type=zipfile.ZIP_DEFLATED)
+        print("  asset added: assets/yt-dlp")
 EOF
 
 echo "== zipalign =="

@@ -109,7 +109,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private long lastLiveSaveMs = 0;
     private double lastLiveSavePos = -1;
     private SeekTrack seek;
-    private TextView timeCur, timeDur, titleView;
+    private TextView timeCur, timeDur, titleView, statusView;
     private SidePanel panel;
     private SubtitleOverlay subtitleOverlay;
     private View panelOpener;
@@ -132,6 +132,31 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private double manualPos = 0;
     private volatile double mpvTimePos = -1, mpvDuration = -1;
     private boolean uiUpdateQueued;
+
+    // ---- v1.32.0: Live TV mode
+    private boolean tvMode = false;
+    private java.util.List<TvChannel> tvChannels;
+    private int tvIndex = 0;
+    // v1.33.0: round-robin servers — which server of the current
+    // channel is being attempted, how many have been tried for this
+    // zap, and whether a load is still in flight (FILE_LOADED clears
+    // it). tvLoadGen guards the load watchdog against stale zaps.
+    private int tvTryIndex = 0;
+    private int tvTryCount = 0;
+    private boolean tvLoading = false;
+    private int tvLoadGen = 0;
+    private long tvLoadOkMs = 0;
+    // v1.33.1: the YouTube audio HLS URL, attached after the video
+    // loads via the audio-add command (see loadTvStream).
+    private String tvPendingAudioUrl = null;
+    private android.widget.ListView tvChannelList;
+    private android.widget.BaseAdapter tvChannelAdapter;
+    private android.view.View tvChannelPanel, tvInfoPanel;
+    private android.widget.TextView tvBanner, tvInfoText;
+    private boolean tvChannelPanelOpen = false, tvInfoPanelOpen = false;
+    private final Runnable hideTvBanner = () -> {
+        if (tvBanner != null) tvBanner.setVisibility(View.GONE);
+    };
 
     private final List<SubtitleItem> onlineRaw = new ArrayList<>();
     private List<SubtitleItem> onlineRanked = new ArrayList<>();
@@ -170,6 +195,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private int audioVerifyPass = 0;
     private int subDelayMs, aspectMode, speedIdx = 2;
     private double videoAspect = 0; // from video-params; 0 = unknown
+    private boolean lastHdr10plus; // v1.24.0: probe found HDR10+ on this file (status line)
 
     private final Runnable hideController = this::hideControllerNow;
     // v1.7.2: guards the hide fade's end action — a stale one must
@@ -232,8 +258,28 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         if (title == null) title = "Video";
         type = getIntent().getStringExtra("type");
         videoId = getIntent().getStringExtra("video_id");
+        // v1.24.0: restore this title's remembered aspect (zoom).
+        if (videoId != null) {
+            aspectMode = Math.max(0, Math.min(2,
+                    aspectPrefs().getInt(videoId, 0)));
+        }
         poster = getIntent().getStringExtra("poster");
         startPos = getIntent().getDoubleExtra("start_pos", 0);
+        // v1.32.0: Live TV mode — the channel list comes from
+        // TvChannelStore (filled by MainActivity.openTv); fall back
+        // to the cached playlist if the process was recreated.
+        tvMode = getIntent().getBooleanExtra("tv_mode", false);
+        if (tvMode) {
+            TvLog.init(this);
+            TvLog.log("tv open index=" + getIntent().getIntExtra("tv_index", 0));
+            tvChannels = TvChannelStore.get();
+            if (tvChannels == null || tvChannels.isEmpty()) {
+                tvChannels = IptvPlaylist.loadCache(this);
+            }
+            if (tvChannels == null) tvChannels = new java.util.ArrayList<>();
+            tvIndex = getIntent().getIntExtra("tv_index", 0);
+            if (tvIndex < 0 || tvIndex >= tvChannels.size()) tvIndex = 0;
+        }
         prefs = new SubtitlePrefs(this);
 
         String[] subUrls = getIntent().getStringArrayExtra("sub_urls");
@@ -278,6 +324,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        // v1.31.0: exiting the player resumes Irama, but only if
+        // Cahaya paused it for this video. isFinishing() keeps a
+        // config-change recreate from resuming mid-video.
+        if (isFinishing()) IramaNowPlaying.resumeAfterVideo(getApplicationContext());
         if (subtitleOverlay != null) {
             subtitleOverlay.clearBitmapDecoder();  // v1.19.0: stop the ffmpeg decoder
             subtitleOverlay.stop();
@@ -357,6 +407,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         backBtn.setId(View.generateViewId());
         backBtn.setOnClickListener(v -> finish());
         top.addView(backBtn);
+        // v1.24.0 (WuPlay idea): title + a status line under it
+        // (resolution, codec, audio, bitrate, HDR10+).
+        LinearLayout titleCol = new LinearLayout(this);
+        titleCol.setOrientation(LinearLayout.VERTICAL);
         titleView = new TextView(this);
         titleView.setText(title);
         titleView.setTextColor(PlayerTheme.TEXT);
@@ -365,9 +419,19 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         titleView.setSingleLine(true);
         titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         titleView.setShadowLayer(6, 0, 2, 0x99000000);
+        titleCol.addView(titleView,
+                new LinearLayout.LayoutParams(-1, -2));
+        statusView = new TextView(this);
+        statusView.setTextColor(android.graphics.Color.parseColor("#B0B5BA"));
+        statusView.setTextSize(13);
+        statusView.setSingleLine(true);
+        statusView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        statusView.setShadowLayer(6, 0, 2, 0x99000000);
+        titleCol.addView(statusView,
+                new LinearLayout.LayoutParams(-1, -2));
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, -2, 1f);
         tlp.leftMargin = dp(16);
-        top.addView(titleView, tlp);
+        top.addView(titleCol, tlp);
         controller.addView(top, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
 
         // bottom block
@@ -466,6 +530,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         subtitleOverlay = new SubtitleOverlay(this, root, prefs);
 
         setContentView(root);
+        if (tvMode) buildTvUi(root);
 
         // v1.7.1: tap the video area to show/hide the controls. On
         // TV the panel is driven by remote keys; on a phone there
@@ -528,7 +593,21 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             // mpv cannot draw subtitles on this path; SubtitleOverlay does it from "sub-text".
             MPVLib.setOptionString("hwdec", "mediacodec");
             MPVLib.setOptionString("ao", "audiotrack,opensles");
-            MPVLib.setOptionString("audio-channels", "stereo");
+            // v1.24.0: audio output setting (WuPlay idea). Stereo is
+            // the current behaviour and stays the default; Passthrough
+            // bitstreams to a receiver; Dolby Digital 5.1 decodes to
+            // 5.1 PCM. Applies on the next playback.
+            String aoMode = getSharedPreferences("cahaya_settings", MODE_PRIVATE)
+                    .getString("audio_output", "stereo");
+            if ("passthrough".equals(aoMode)) {
+                MPVLib.setOptionString("audio-spdif", "ac3,eac3,dts,dts-hd,truehd");
+                MPVLib.setOptionString("audio-channels", "auto");
+            } else if ("dd51".equals(aoMode)) {
+                MPVLib.setOptionString("audio-spdif", "ac3,eac3");
+                MPVLib.setOptionString("audio-channels", "5.1");
+            } else {
+                MPVLib.setOptionString("audio-channels", "stereo");
+            }
             MPVLib.setOptionString("cache", "yes");
             // v1.13.0: Nuvio-style buffer tuning (from the Nuvio
             // source read 2026-10-29). Their player keeps a 15-45s
@@ -555,6 +634,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             // no sensitive data, so skip TLS verification for mpv
             // only; Java fetches (addons, scrapers) still verify.
             MPVLib.setOptionString("tls-verify", "no");
+            // v1.32.1: the TV tab resolves YouTube to direct
+            // googlevideo URLs itself. mpv's built-in ytdl hook
+            // intercepts those URLs and tries to run yt-dlp /
+            // youtube-dl (neither binary exists on the box), so
+            // every YouTube channel failed to load ("Subprocess
+            // failed: init", mpv.log 2026-11-09). Disable the hook —
+            // the URLs are already direct streams.
+            MPVLib.setOptionString("ytdl", "no");
             // Provider-required headers at init time, not just before
             // loadfile: late option changes may be ignored by mpv.
             if (streamHeaders != null && !streamHeaders.isEmpty()) {
@@ -594,10 +681,19 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void maybeStartPlayback() {
         if (mpvReady && surfaceReady && !fileStarted) {
             fileStarted = true;
+            // v1.31.0: a video starting pauses Irama (resumed on
+            // player exit). Called here and again in onFileLoaded.
+            IramaNowPlaying.pauseForVideo(this);
             manualPos = 0;
             mpvTimePos = -1;
             mpvDuration = -1;
             if (subtitleOverlay != null) subtitleOverlay.start();
+            // v1.32.0: Live TV resolves + zaps through playTvChannel
+            // (no HDR probe — it costs 10 s per channel switch).
+            if (tvMode) {
+                playTvChannel(tvIndex);
+                return;
+            }
             loadfileProbed(streamUrl, headersMap(streamHeaders), null, null,
                     () -> {
                         Toast.makeText(this, "Couldn't play", Toast.LENGTH_LONG).show();
@@ -641,6 +737,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             final boolean useSw = sw;
             main.post(() -> {
                 if (destroyed) return;
+                lastHdr10plus = useSw;
                 if (preLoad != null) preLoad.run();
                 try {
                     MPVLib.setOptionString("hwdec", useSw ? "no" : "mediacodec");
@@ -658,6 +755,32 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     /** mpv reports FILE_LOADED (event 8) once the demuxer is open and tracks are known. */
     private void onFileLoaded() {
         fileLoaded = true;
+        // v1.33.0: a TV load completed — this server works; remember
+        // it as the channel's starting server and clear the watchdog.
+        if (tvMode && tvLoading) {
+            tvLoading = false;
+            tvLoadOkMs = System.currentTimeMillis();
+            tvTryCount = 0; // a working server resets the round-robin
+            if (tvChannels != null && tvIndex >= 0 && tvIndex < tvChannels.size()) {
+                tvChannels.get(tvIndex).lastGoodServer = tvTryIndex;
+            }
+            // v1.33.1: attach the YouTube audio HLS now that the
+            // video is in (audio-add takes the URL as one argument,
+            // so the commas in it are safe).
+            if (tvPendingAudioUrl != null) {
+                final String au = tvPendingAudioUrl;
+                tvPendingAudioUrl = null;
+                try {
+                    MPVLib.command(new String[]{"audio-add", au, "select"});
+                    TvLog.log("tv audio-add " + au.substring(0, Math.min(90, au.length())));
+                } catch (Throwable t) {
+                    TvLog.log("tv audio-add FAILED: " + t);
+                }
+            }
+        }
+        // v1.31.0: safety-net pause (see maybeStartPlayback) — also
+        // catches the back-to-back-video race.
+        IramaNowPlaying.pauseForVideo(this);
         switchingStream = false; // v1.5.3: the new file is in, end-file is real again
         prefs.applyToMpv();
         StringBuilder dump = new StringBuilder();
@@ -672,6 +795,54 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         if (subDelayMs != 0) try { MPVLib.setPropertyDouble("sub-delay", subDelayMs / 1000.0); } catch (Throwable ignored) {}
         showController();
         autoSelectSubtitle();
+        updateStatusLine();
+        // v1.24.0: remember this stream for the picker's "Last played" tag.
+        if (videoId != null && streamUrl != null) saveLastPlayed(this, videoId, streamUrl);
+    }
+
+    /** v1.24.0 (WuPlay idea): one-line status under the player title —
+     *  resolution, video codec, audio codec, bitrate, HDR10+ when the
+     *  probe found it. Every property is read through the STRING
+     *  getter (the numeric getters return garbage on this libplayer
+     *  build) and anything unreadable is simply left out. */
+    private void updateStatusLine() {
+        if (statusView == null) return;
+        try {
+            StringBuilder sb = new StringBuilder();
+            int w = 0, h = 0;
+            try { w = Integer.parseInt(MPVLib.getPropertyString("video-params/w")); } catch (Throwable ignored) {}
+            try { h = Integer.parseInt(MPVLib.getPropertyString("video-params/h")); } catch (Throwable ignored) {}
+            if (w <= 0 || h <= 0) {
+                try { w = Integer.parseInt(MPVLib.getPropertyString("video-out-params/w")); } catch (Throwable ignored) {}
+                try { h = Integer.parseInt(MPVLib.getPropertyString("video-out-params/h")); } catch (Throwable ignored) {}
+            }
+            if (w > 0 && h > 0) sb.append(w).append("\u00d7").append(h);
+            String vc = propStr("video-params/codec");
+            if (!vc.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(vc); }
+            String ac = propStr("audio-codec-name");
+            if (!ac.isEmpty()) { if (sb.length() > 0) sb.append("  \u2022  "); sb.append(ac.toUpperCase(java.util.Locale.US)); }
+            String br = propStr("video-bitrate");
+            if (!br.isEmpty()) {
+                try {
+                    double mbps = Long.parseLong(br) / 1000000.0;
+                    if (mbps > 0) {
+                        if (sb.length() > 0) sb.append("  \u2022  ");
+                        sb.append(String.format(java.util.Locale.US, "%.1f Mbps", mbps));
+                    }
+                } catch (Throwable ignored) {}
+            }
+            if (lastHdr10plus) { if (sb.length() > 0) sb.append("  \u2022  "); sb.append("HDR10+"); }
+            statusView.setText(sb.toString());
+        } catch (Throwable ignored) {}
+    }
+
+    private static String propStr(String p) {
+        try {
+            String v = MPVLib.getPropertyString(p);
+            return v == null ? "" : v.trim();
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     // =====================================================================
@@ -795,8 +966,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         final List<String> addonUrls = new ArrayList<>(mgr.addonUrls());
         final List<Plugin> enabled = new ArrayList<>();
         for (Plugin p : plugins.plugins()) if (p.enabled) enabled.add(p);
-        final AtomicInteger pending =
-                new AtomicInteger(addonUrls.size() + enabled.size() + 3);
+        // v1.23.0: pending counts every counted source exactly (see
+        // DetailsActivity — the old "+3" dropped late providers).
+        String[] jsProviders = {JsScraperRunner.PROVIDER_4KHDHUB,
+                JsScraperRunner.PROVIDER_PLAYIMDB,
+                JsScraperRunner.PROVIDER_MOVIEBOX,
+                JsScraperRunner.PROVIDER_MOVIEBOX_TV};
+        final AtomicInteger pending = new AtomicInteger(
+                addonUrls.size() + enabled.size() + 1 + jsProviders.length);
         final Runnable done = () -> {
             if (pending.decrementAndGet() > 0) return;
             if (destroyed) return;
@@ -854,11 +1031,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             } catch (Exception ignored) {
             }
         }
-        for (String pid : new String[]{JsScraperRunner.PROVIDER_4KHDHUB,
-                JsScraperRunner.PROVIDER_PLAYIMDB}) {
+        for (String pid : jsProviders) {
             final String providerId = pid;
             new JsScraperRunner(this, providerId).run(jsMovieDbId, "series",
-                    nv.season, nv.episode,
+                    nv.season, nv.episode, meta.name, scraperYear,
                     new JsScraperRunner.Callback() {
                         @Override public void onResult(List<StreamItem> items) {
                             collect.onResult(items);
@@ -880,7 +1056,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 return;
             }
             switchToStream(s.url, s.headers, nextTitle, nextVideoId, nextPoster);
-        });
+        }, streamUrl, "Playing");
     }
 
     private void playNextTorrent(final String nextTitle, final String nextVideoId,
@@ -1012,8 +1188,32 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         updateProgress();
     }
 
+    /** v1.24.0 (WuPlay idea): the last stream played for a title, so the
+     *  picker can tag it "Last played". Stored per videoId. */
+    static void saveLastPlayed(android.content.Context ctx, String videoId, String url) {
+        try {
+            ctx.getSharedPreferences("cahaya_last_stream", android.content.Context.MODE_PRIVATE)
+                    .edit().putString(videoId, url).apply();
+        } catch (Throwable ignored) {}
+    }
+
+    static String lastPlayedUrl(android.content.Context ctx, String videoId) {
+        try {
+            return ctx.getSharedPreferences("cahaya_last_stream", android.content.Context.MODE_PRIVATE)
+                    .getString(videoId, null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** v1.24.0 (WuPlay idea): aspect (zoom) remembered per title. */
+    private android.content.SharedPreferences aspectPrefs() {
+        return getSharedPreferences("cahaya_aspect", MODE_PRIVATE);
+    }
+
     private void cycleAspect() {
         aspectMode = (aspectMode + 1) % ASPECT_NAMES.length;
+        if (videoId != null) aspectPrefs().edit().putInt(videoId, aspectMode).apply();
         try {
             // v1.12.0: modes swapped back per his correction — Fit
             // shows the whole video (keepaspect), Stretch fills the
@@ -1245,6 +1445,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 return super.onKeyDown(keyCode, event);
             case KeyEvent.KEYCODE_BACK:
                 if (panel.isOpen()) { closePanel(); return true; }
+                // v1.32.0: a TV panel open takes Back first.
+                if (tvMode && tvChannelPanelOpen) { closeTvChannelPanel(); return true; }
+                if (tvMode && tvInfoPanelOpen) { closeTvInfoPanel(); return true; }
                 if (controller.getVisibility() == View.VISIBLE && !paused) {
                     main.removeCallbacks(hideController);
                     controller.setVisibility(View.GONE);
@@ -1283,6 +1486,42 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         }
         if (panel.isOpen()) return super.onKeyDown(keyCode, event);
 
+        // v1.32.0: Live TV remote map. LEFT opens the channel list
+        // (it is the only way to open it); RIGHT opens the channel
+        // info panel; UP/DOWN always changes channel, whether the
+        // list is open (surfing) or closed (zapping). OK closes an
+        // open TV panel; otherwise it falls through to the normal
+        // play/pause handling below.
+        if (tvMode) {
+            switch (keyCode) {
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                    if (tvInfoPanelOpen) { closeTvInfoPanel(); return true; }
+                    if (tvChannelPanelOpen) { closeTvChannelPanel(); return true; }
+                    openTvChannelPanel();
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    if (tvChannelPanelOpen) { closeTvChannelPanel(); return true; }
+                    if (tvInfoPanelOpen) { closeTvInfoPanel(); return true; }
+                    openTvInfoPanel();
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_UP:
+                    if (tvInfoPanelOpen) { closeTvInfoPanel(); return true; }
+                    playTvChannel(tvIndex - 1);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                    if (tvInfoPanelOpen) { closeTvInfoPanel(); return true; }
+                    playTvChannel(tvIndex + 1);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                case KeyEvent.KEYCODE_ENTER:
+                    if (tvChannelPanelOpen) { closeTvChannelPanel(); return true; }
+                    if (tvInfoPanelOpen) { closeTvInfoPanel(); return true; }
+                    break;
+                default:
+                    break;
+            }
+        }
+
         boolean controllerVisible = controller.getVisibility() == View.VISIBLE;
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_CENTER:
@@ -1316,6 +1555,355 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         }
         if (controllerVisible) scheduleHide();
         return super.onKeyDown(keyCode, event);
+    }
+
+    // =====================================================================
+    // v1.32.0: Live TV
+    // =====================================================================
+
+    /** Build the TV overlays: left channel-list panel, right info
+     *  panel, and the channel banner. All start hidden. */
+    private void buildTvUi(FrameLayout root) {
+        // ---- left channel-list panel (LEFT opens it, nothing else does)
+        LinearLayout chPanel = new LinearLayout(this);
+        chPanel.setOrientation(LinearLayout.VERTICAL);
+        chPanel.setBackgroundColor(Color.parseColor("#CC000000"));
+        chPanel.setVisibility(View.GONE);
+        TextView chHead = new TextView(this);
+        chHead.setText("\uD83D\uDCFA Live TV  \u00b7  "
+                + (tvChannels == null ? 0 : tvChannels.size()) + " channels");
+        chHead.setTextColor(PlayerTheme.TEXT);
+        chHead.setTextSize(18);
+        chHead.setPadding(dp(16), dp(16), dp(16), dp(12));
+        chPanel.addView(chHead, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        tvChannelList = new android.widget.ListView(this);
+        tvChannelList.setFocusable(false);
+        tvChannelList.setClickable(false);
+        tvChannelList.setDivider(null);
+        tvChannelList.setDividerHeight(0);
+        tvChannelAdapter = new android.widget.BaseAdapter() {
+            @Override public int getCount() {
+                return tvChannels == null ? 0 : tvChannels.size();
+            }
+            @Override public Object getItem(int p) { return tvChannels.get(p); }
+            @Override public long getItemId(int p) { return p; }
+            @Override public View getView(int p, View cv, ViewGroup parent) {
+                LinearLayout row;
+                TextView nameV, groupV;
+                if (cv instanceof LinearLayout) {
+                    row = (LinearLayout) cv;
+                    TextView[] tag = (TextView[]) row.getTag();
+                    nameV = tag[0];
+                    groupV = tag[1];
+                } else {
+                    row = new LinearLayout(PlayerActivity.this);
+                    row.setOrientation(LinearLayout.VERTICAL);
+                    row.setPadding(dp(16), dp(10), dp(16), dp(10));
+                    nameV = new TextView(PlayerActivity.this);
+                    nameV.setTextColor(PlayerTheme.TEXT);
+                    nameV.setTextSize(17);
+                    nameV.setSingleLine(true);
+                    groupV = new TextView(PlayerActivity.this);
+                    groupV.setTextColor(Color.parseColor("#AAAAAA"));
+                    groupV.setTextSize(13);
+                    groupV.setSingleLine(true);
+                    row.addView(nameV, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
+                    row.addView(groupV, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
+                    row.setTag(new TextView[]{nameV, groupV});
+                }
+                TvChannel c = tvChannels.get(p);
+                nameV.setText(c.name + (c.serverCount() > 1
+                        ? "  \u00b7  " + c.serverCount() + " servers" : ""));
+                groupV.setText(c.categoryName()
+                        + (c.group == null || c.group.isEmpty()
+                                || c.group.equalsIgnoreCase(c.categoryName())
+                                ? "" : "  \u00b7  " + c.group));
+                row.setBackgroundColor(p == tvIndex
+                        ? Color.parseColor("#2196F3")
+                        : Color.TRANSPARENT);
+                return row;
+            }
+        };
+        tvChannelList.setAdapter(tvChannelAdapter);
+        chPanel.addView(tvChannelList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        tvChannelPanel = chPanel;
+        root.addView(chPanel, new FrameLayout.LayoutParams(
+                dp(380), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
+
+        // ---- right info panel (RIGHT opens it)
+        LinearLayout infoPanel = new LinearLayout(this);
+        infoPanel.setOrientation(LinearLayout.VERTICAL);
+        infoPanel.setBackgroundColor(Color.parseColor("#CC000000"));
+        infoPanel.setVisibility(View.GONE);
+        TextView infoHead = new TextView(this);
+        infoHead.setText("Channel info");
+        infoHead.setTextColor(PlayerTheme.TEXT);
+        infoHead.setTextSize(18);
+        infoHead.setPadding(dp(16), dp(16), dp(16), dp(12));
+        infoPanel.addView(infoHead, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        tvInfoText = new TextView(this);
+        tvInfoText.setTextColor(PlayerTheme.TEXT);
+        tvInfoText.setTextSize(16);
+        tvInfoText.setLineSpacing(dp(4), 1f);
+        tvInfoText.setPadding(dp(16), dp(4), dp(16), dp(16));
+        infoPanel.addView(tvInfoText, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        tvInfoPanel = infoPanel;
+        root.addView(infoPanel, new FrameLayout.LayoutParams(
+                dp(420), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
+
+        // ---- channel banner (top-left, fades after 3 s)
+        tvBanner = new TextView(this);
+        tvBanner.setBackgroundColor(Color.parseColor("#CC000000"));
+        tvBanner.setTextColor(PlayerTheme.TEXT);
+        tvBanner.setTextSize(20);
+        tvBanner.setPadding(dp(16), dp(10), dp(16), dp(10));
+        tvBanner.setVisibility(View.GONE);
+        FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
+        blp.setMargins(dp(16), dp(16), 0, 0);
+        root.addView(tvBanner, blp);
+    }
+
+    /** Switch to a channel (wraps around). A channel has several
+     *  servers; the attempt starts at its last-known-good server and
+     *  round-robins to the next one when a server fails to load or
+     *  resolve. The previous stream keeps playing until the new one
+     *  is ready to load. */
+    private void playTvChannel(int index) {
+        if (tvChannels == null || tvChannels.isEmpty()) return;
+        if (index < 0) index = tvChannels.size() - 1;
+        if (index >= tvChannels.size()) index = 0;
+        tvIndex = index;
+        TvChannelStore.setIndex(index);
+        final TvChannel ch = tvChannels.get(index);
+        title = ch.name;
+        TvLog.log("tv zap #" + (index + 1) + " " + ch.name
+                + " servers=" + ch.serverCount());
+        if (titleView != null) titleView.setText(title);
+        showTvBanner(ch);
+        if (tvChannelAdapter != null) tvChannelAdapter.notifyDataSetChanged();
+        if (tvChannelList != null) tvChannelList.setSelection(index);
+        tvTryCount = 0;
+        tvTryIndex = ch.lastGoodServer < ch.serverCount() ? ch.lastGoodServer : 0;
+        tryTvServer(tvTryIndex);
+    }
+
+    /** Attempt one server of the current channel. A YouTube server
+     *  resolves to HLS manifests first (yt-dlp, worker thread); a
+     *  direct server loads straight away. A failed resolve or a load
+     *  that never completes (watchdog) falls through to the next
+     *  server. */
+    private void tryTvServer(int serverIdx) {
+        if (tvChannels == null || tvChannels.isEmpty()) return;
+        final TvChannel ch = tvChannels.get(tvIndex);
+        final TvChannel.Server srv = ch.serverAt(serverIdx);
+        if (srv == null) return;
+        tvTryIndex = serverIdx;
+        tvTryCount++;
+        tvPendingAudioUrl = null; // a new attempt clears any stale audio
+        TvLog.log("tv try server " + (serverIdx + 1) + "/" + ch.serverCount()
+                + " " + srv.label + " " + ch.name);
+        if (srv.isYouTube()) {
+            if (spinner != null) spinner.setVisibility(View.VISIBLE);
+            final int reqIndex = tvIndex;
+            final int reqServer = serverIdx;
+            final int reqGen = tvLoadGen;
+            new Thread(() -> {
+                IptvPlaylist.Resolved r =
+                        IptvPlaylist.resolveYouTube(PlayerActivity.this, srv.youtubeId);
+                main.post(() -> {
+                    if (destroyed) return;
+                    if (spinner != null) spinner.setVisibility(View.GONE);
+                    // The user may have zapped on already — never
+                    // load a stale resolution over the new channel.
+                    if (tvIndex != reqIndex || tvTryIndex != reqServer
+                            || tvLoadGen != reqGen) return;
+                    if (r == null || r.videoUrl == null) {
+                        TvLog.log("tv yt resolve failed, next server");
+                        tryNextTvServer();
+                        return;
+                    }
+                    loadTvStream(r.videoUrl, r.audioUrl, null);
+                });
+            }, "yt-resolve").start();
+        } else {
+            java.util.Map<String, String> h = new java.util.HashMap<>();
+            if (srv.referer != null && !srv.referer.isEmpty()) h.put("Referer", srv.referer);
+            if (srv.userAgent != null && !srv.userAgent.isEmpty()) h.put("User-Agent", srv.userAgent);
+            loadTvStream(srv.url, null, h);
+        }
+    }
+
+    /** Round-robin: try the next server of the current channel, or
+     *  give up (all servers tried) with a toast. */
+    private void tryNextTvServer() {
+        if (tvChannels == null || tvChannels.isEmpty()) return;
+        TvChannel ch = tvChannels.get(tvIndex);
+        if (tvTryCount >= ch.serverCount()) {
+            TvLog.log("tv all servers failed " + ch.name);
+            Toast.makeText(this, "Couldn't play " + ch.name,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        tryTvServer((tvTryIndex + 1) % ch.serverCount());
+    }
+
+    /** Direct loadfile for a TV zap — no HDR10+ probe (it costs up
+     *  to 10 s per switch, unusable for channel surfing, and live
+     *  news is not HDR10+). Mirrors the Next-episode switch guard. */
+    private void loadTvStream(String videoUrl, String audioUrl,
+                              java.util.Map<String, String> headers) {
+        if (!mpvReady || destroyed) return;
+        switchingStream = true;
+        final int gen = ++switchGeneration;
+        main.postDelayed(() -> {
+            if (gen == switchGeneration) switchingStream = false;
+        }, 10000);
+        // v1.33.0: a load that never completes (403, dead server,
+        // stalled HLS) round-robins to the next server after 8 s.
+        tvLoading = true;
+        final int loadGen = ++tvLoadGen;
+        main.postDelayed(() -> {
+            if (destroyed || !tvMode) return;
+            if (loadGen != tvLoadGen || !tvLoading) return;
+            TvLog.log("tv load watchdog fired, next server");
+            tvLoading = false;
+            tryNextTvServer();
+        }, 8000);
+        try {
+            // Per-channel headers are read by mpv when the stream
+            // opens, so set them just before loadfile.
+            if (headers != null && !headers.isEmpty()) {
+                StringBuilder hb = new StringBuilder();
+                for (java.util.Map.Entry<String, String> e : headers.entrySet()) {
+                    if (hb.length() > 0) hb.append(",");
+                    hb.append(e.getKey()).append(":").append(e.getValue());
+                }
+                MPVLib.setOptionString("http-header-fields", hb.toString());
+            } else {
+                MPVLib.setOptionString("http-header-fields", "");
+            }
+        } catch (Throwable ignored) {}
+        try {
+            // v1.33.1: the YouTube audio HLS rides as an external
+            // audio track, attached by audio-add once the video
+            // loads (onFileLoaded). Do NOT use the audio-files
+            // option: it is a comma-separated list, and the
+            // manifest URL contains commas (sparams/lsparams), so
+            // mpv split it into bogus files ("Cannot open file
+            // 'https'") and the channel played silent. The
+            // audio-add command takes the URL as one argument.
+            // Clear it for direct streams so a stale track cannot
+            // leak into the next channel.
+            tvPendingAudioUrl = audioUrl;
+            MPVLib.setOptionString("hwdec", "mediacodec");
+        } catch (Throwable ignored) {}
+        try {
+            MPVLib.command(new String[]{"loadfile", videoUrl});
+            TvLog.log("tv loadfile " + videoUrl.substring(0,
+                    Math.min(90, videoUrl.length()))
+                    + " audio=" + (audioUrl != null ? "yes" : "no"));
+        } catch (Throwable t) {
+            TvLog.log("tv loadfile FAILED: " + t);
+            Toast.makeText(this, "Couldn't play " + title, Toast.LENGTH_LONG).show();
+        }
+        // No showController(): the channel banner already names the
+        // new channel, and the controller would sit on top of it.
+    }
+
+    private void showTvBanner(TvChannel ch) {
+        if (tvBanner == null) return;
+        tvBanner.setText((tvIndex + 1) + "  \u2022  " + ch.name);
+        tvBanner.setVisibility(View.VISIBLE);
+        main.removeCallbacks(hideTvBanner);
+        main.postDelayed(hideTvBanner, 3000);
+    }
+
+    private void openTvChannelPanel() {
+        if (tvChannelPanel == null) return;
+        closeTvInfoPanel();
+        tvChannelPanelOpen = true;
+        tvChannelPanel.setVisibility(View.VISIBLE);
+        if (tvChannelAdapter != null) tvChannelAdapter.notifyDataSetChanged();
+        if (tvChannelList != null) tvChannelList.setSelection(tvIndex);
+        if (controller.getVisibility() == View.VISIBLE) {
+            controller.setVisibility(View.GONE);
+        }
+    }
+
+    private void closeTvChannelPanel() {
+        tvChannelPanelOpen = false;
+        if (tvChannelPanel != null) tvChannelPanel.setVisibility(View.GONE);
+    }
+
+    private void openTvInfoPanel() {
+        if (tvInfoPanel == null) return;
+        closeTvChannelPanel();
+        tvInfoPanelOpen = true;
+        tvInfoPanel.setVisibility(View.VISIBLE);
+        refreshTvInfo();
+        if (controller.getVisibility() == View.VISIBLE) {
+            controller.setVisibility(View.GONE);
+        }
+    }
+
+    private void closeTvInfoPanel() {
+        tvInfoPanelOpen = false;
+        if (tvInfoPanel != null) tvInfoPanel.setVisibility(View.GONE);
+    }
+
+    /** Channel info, read live from mpv at the moment RIGHT is
+     *  pressed (resolution/audio only exist once the stream runs).
+     *  "Servers" = the channel's alternate stream URLs, with the
+     *  one currently playing. */
+    private void refreshTvInfo() {
+        if (tvInfoText == null || tvChannels == null || tvChannels.isEmpty()) return;
+        TvChannel ch = tvChannels.get(tvIndex);
+        StringBuilder sb = new StringBuilder();
+        sb.append("Channel: ").append(ch.name).append("\n");
+        sb.append("Group: ").append(ch.group == null || ch.group.isEmpty()
+                ? "-" : ch.group).append("\n");
+        sb.append("Category: ").append(ch.categoryName()).append("\n");
+        int w = 0, h = 0;
+        try { w = Integer.parseInt(MPVLib.getPropertyString("video-params/w")); } catch (Throwable ignored) {}
+        try { h = Integer.parseInt(MPVLib.getPropertyString("video-params/h")); } catch (Throwable ignored) {}
+        sb.append("Resolution: ").append(w > 0 && h > 0
+                ? (w + "\u00d7" + h) : "-").append("\n");
+        String vc = propStr("video-params/codec");
+        sb.append("Video: ").append(vc.isEmpty() ? "-" : vc).append("\n");
+        String ac = propStr("audio-codec-name");
+        String sr = propStr("audio-params/samplerate");
+        String cc = propStr("audio-params/channel-count");
+        sb.append("Audio: ").append(ac.isEmpty() ? "-"
+                : ac.toUpperCase(java.util.Locale.US));
+        if (!sr.isEmpty()) sb.append("  ").append(sr).append(" Hz");
+        if (!cc.isEmpty()) sb.append("  ").append(cc).append("ch");
+        sb.append("\n");
+        sb.append("Servers: ").append(ch.serverCount());
+        TvChannel.Server cur = ch.serverAt(tvTryIndex);
+        if (cur != null) {
+            sb.append("  (").append(tvTryIndex + 1).append("/")
+                    .append(ch.serverCount()).append(" \u00b7 ")
+                    .append(cur.label).append(")");
+        }
+        sb.append("\n");
+        sb.append("Channels: ").append(tvChannels.size()).append("\n");
+        sb.append("Source: ").append(cur != null ? cur.label : "-").append("\n");
+        tvInfoText.setText(sb.toString());
     }
 
     // =====================================================================
@@ -2088,7 +2676,10 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // =====================================================================
 
     @Override public void eventProperty(String property) {
-        if ("track-list".equals(property)) main.post(this::schedulePanelRefresh);
+        if ("track-list".equals(property)) {
+            main.post(this::schedulePanelRefresh);
+            main.post(this::updateStatusLine); // audio switch changes the codec line
+        }
         else if ("sub-text".equals(property)) subtitleOverlay.onText("");   // unavailable = no subtitle now
     }
     @Override public void eventProperty(String property, long value) {}
@@ -2131,8 +2722,22 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         // MPV_EVENT_END_FILE — v1.5.3: ignored while a Next switch is
         // in flight, otherwise the outgoing file's end event finishes
         // the player right after the user picks the next stream.
+        // v1.33.0: in TV mode a real end (not a switch) round-robins
+        // to the next server instead of exiting — unless the stream
+        // died within 5 s of loading (flapping server), then stop.
         else if (eventId == 7) main.post(() -> {
-            if (!switchingStream) finish();
+            if (switchingStream) return;
+            if (tvMode && !tvLoading) {
+                if (System.currentTimeMillis() - tvLoadOkMs >= 5000) {
+                    tvTryCount = 0;
+                    tryNextTvServer();
+                    return;
+                }
+                Toast.makeText(this, "Stream ended: " + title,
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            finish();
         });
     }
 

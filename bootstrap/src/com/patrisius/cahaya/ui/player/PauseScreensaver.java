@@ -15,6 +15,8 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import com.patrisius.cahaya.ui.PosterUtil;
+
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -219,7 +221,7 @@ public class PauseScreensaver extends FrameLayout {
                 c.setReadTimeout(20000);
                 c.setRequestProperty("User-Agent", "Cahaya/1.17 (Android TV)");
                 InputStream in = c.getInputStream();
-                final Bitmap bmp = BitmapFactory.decodeStream(in);
+                final Bitmap bmp = PosterUtil.decodeSampled(in, 960);
                 in.close();
                 c.disconnect();
                 if (bmp != null) posterCache.put(url, bmp);

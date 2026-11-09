@@ -13,6 +13,15 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
+    <!-- v1.30.1: Android 11+ package visibility — without this,
+         getLaunchIntentForPackage() returns null for Irama even
+         though it is installed (targetSdk 34), and the Music tile
+         wrongly toasts "Irama is not installed". -->
+    <queries>
+        <package android:name="com.patrisius.irama" />
+        <package android:name="com.patrisius.irama.debug" />
+    </queries>
+
     <application
         android:name=".CahayaApp"
         android:allowBackup="true"

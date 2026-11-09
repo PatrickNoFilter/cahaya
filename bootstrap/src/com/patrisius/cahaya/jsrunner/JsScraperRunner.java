@@ -62,6 +62,15 @@ public class JsScraperRunner {
             "https://raw.githubusercontent.com/NuvioPlugin/All-in-One-Nuvio/refs/heads/main/providers/";
     public static final String PROVIDER_4KHDHUB = "4khdhub";
     public static final String PROVIDER_PLAYIMDB = "playimdb";
+    /** v1.21.0: MovieBox — local provider (res/raw/moviebox_provider.js),
+     *  clean-room implementation of the MovieBox API flow. NOT downloaded
+     *  from upstream (that repo ships no LICENSE); loaded from the APK. */
+    public static final String PROVIDER_MOVIEBOX = "moviebox";
+    /** v1.22.0: MovieBox TV — local provider (res/raw/moviebox_tv_provider.js),
+     *  same account system but the TV backend (tv.aoneroom.com
+     *  /wefeed-tv-bff/*), which returns real direct MP4s where the phone
+     *  backend serves only the notice video. */
+    public static final String PROVIDER_MOVIEBOX_TV = "movieboxtv";
     private final String providerId;
     private final String providerUrl;
     private static final String UA =
@@ -72,16 +81,27 @@ public class JsScraperRunner {
         void onError(String message);
     }
 
+    /** v1.26.0: home-rows mode — returns the provider's getHomeRows()
+     *  JSON verbatim (rows of titles), not StreamItems. */
+    public interface HomeRowsCallback {
+        void onResult(String json);
+        void onError(String message);
+    }
+
     private final Activity activity;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newCachedThreadPool();
     private WebView webView;
     private java.io.File logFile;
     private Callback pending;
+    private HomeRowsCallback homePending;
+    private boolean homeRowsMode;
     private int tmdbId;
     private String jsType;
     private int season;
     private int episode;
+    private String title;
+    private int year;
     private boolean finished;
 
     public JsScraperRunner(Activity activity, String providerId) {
@@ -107,19 +127,47 @@ public class JsScraperRunner {
         } catch (Exception ignored) { }
     }
 
-    /** Runs the provider for one title. Must be called on the main thread. */
-    public void run(int tmdbId, String type, int season, int episode, Callback cb) {
+    /** Runs the provider for one title. Must be called on the main thread.
+     *  title/year come from Cinemeta meta; MovieBox searches by title
+     *  (its TMDB step is dead — key redacted upstream), the other
+     *  providers ignore the extra args. */
+    public void run(int tmdbId, String type, int season, int episode,
+            String title, int year, Callback cb) {
         fileLog("RUN " + providerId + " tmdbId=" + tmdbId + " type=" + type
-                + " season=" + season + " episode=" + episode);
+                + " season=" + season + " episode=" + episode
+                + " title=" + title + " year=" + year);
         this.tmdbId = tmdbId;
         this.jsType = "series".equals(type) ? "tv" : "movie";
         this.season = season;
         this.episode = episode;
+        this.title = title;
+        this.year = year;
         this.pending = cb;
-        if (tmdbId <= 0) {
+        // v1.26.4: the MovieBox providers search by title/year and
+        // never use tmdbId, so they run without a moviedb_id (a
+        // fallback Details has none). 4khdhub/PlayIMDb still need it.
+        boolean needsTmdbId = !PROVIDER_MOVIEBOX.equals(providerId)
+                && !PROVIDER_MOVIEBOX_TV.equals(providerId);
+        if (tmdbId <= 0 && needsTmdbId) {
             fail("no moviedb_id in Cinemeta meta");
             return;
         }
+        startWebView();
+    }
+
+    /** v1.26.0: run the provider's getHomeRows() (no title — the rows
+     *  are the provider's own home lists). Same headless WebView as
+     *  run(); the result arrives as raw JSON via HomeRowsCallback. */
+    public void runHomeRows(HomeRowsCallback cb) {
+        fileLog("RUN HOME " + providerId);
+        this.homeRowsMode = true;
+        this.homePending = cb;
+        startWebView();
+    }
+
+    /** Shared headless-WebView setup for run() and runHomeRows().
+     *  Must be called on the main thread. */
+    private void startWebView() {
         try {
             webView = new WebView(activity);
             fileLog("WebView created");
@@ -159,7 +207,13 @@ public class JsScraperRunner {
         io.execute(new Runnable() {
             @Override public void run() {
                 final String shim = readRaw(R.raw.cheerio_shim);
-                final String provider = httpGet(providerUrl);
+                // v1.21.0/1.22.0: MovieBox + MovieBox TV are bundled (res/raw),
+                // the others are downloaded from upstream at runtime as before.
+                final String provider = PROVIDER_MOVIEBOX.equals(providerId)
+                        ? readRaw(R.raw.moviebox_provider)
+                        : PROVIDER_MOVIEBOX_TV.equals(providerId)
+                        ? readRaw(R.raw.moviebox_tv_provider)
+                        : httpGet(providerUrl);
                 main.post(new Runnable() {
                     @Override public void run() {
                         if (finished || webView == null) return;
@@ -172,14 +226,27 @@ public class JsScraperRunner {
                         String load = "window.__providerExports = window.__loadProvider("
                                 + JSONObject.quote(provider) + ");";
                         webView.evaluateJavascript(load, null);
-                        String call = "(function(){ try { var p = window.__providerExports.getStreams("
-                                + tmdbId + ", " + JSONObject.quote(jsType) + ", "
-                                + season + ", " + episode + ");"
-                                + " Promise.resolve(p).then(function(streams){"
-                                + "   try { CahayaBridge.onStreams(JSON.stringify(streams || [])); }"
-                                + "   catch (e) { CahayaBridge.onError('stringify: ' + e.message); } })"
-                                + " .catch(function(e){ CahayaBridge.onError(e && e.message ? e.message : String(e)); });"
-                                + " } catch (e) { CahayaBridge.onError(e.message); } })();";
+                        // v1.26.0: home-rows mode calls getHomeRows()
+                        // and returns the raw rows JSON instead of streams.
+                        String call;
+                        if (homeRowsMode) {
+                            call = "(function(){ try { var p = window.__providerExports.getHomeRows();"
+                                    + " Promise.resolve(p).then(function(rows){"
+                                    + "   try { CahayaBridge.onHomeRows(JSON.stringify(rows || [])); }"
+                                    + "   catch (e) { CahayaBridge.onError('stringify: ' + e.message); } })"
+                                    + " .catch(function(e){ CahayaBridge.onError(e && e.message ? e.message : String(e)); });"
+                                    + " } catch (e) { CahayaBridge.onError(e.message); } })();";
+                        } else {
+                            call = "(function(){ try { var p = window.__providerExports.getStreams("
+                                    + tmdbId + ", " + JSONObject.quote(jsType) + ", "
+                                    + season + ", " + episode + ", "
+                                    + JSONObject.quote(title != null ? title : "") + ", " + year + ");"
+                                    + " Promise.resolve(p).then(function(streams){"
+                                    + "   try { CahayaBridge.onStreams(JSON.stringify(streams || [])); }"
+                                    + "   catch (e) { CahayaBridge.onError('stringify: ' + e.message); } })"
+                                    + " .catch(function(e){ CahayaBridge.onError(e && e.message ? e.message : String(e)); });"
+                                    + " } catch (e) { CahayaBridge.onError(e.message); } })();";
+                        }
                         webView.evaluateJavascript(call, null);
                     }
                 });
@@ -189,9 +256,14 @@ public class JsScraperRunner {
 
     private static final String BOOTSTRAP_JS =
             "window.__fetchSeq = 0; window.__fetchPending = {};"
-            + "window.__fetchDeliver = function(id, status, ok, bodyText) {"
+            + "window.__fetchDeliver = function(id, status, ok, bodyText, headersJson) {"
             + "  var p = window.__fetchPending[id]; if (!p) return; delete window.__fetchPending[id];"
+            + "  var hdrs = {}; try { hdrs = JSON.parse(headersJson || '{}'); } catch (e) {}"
             + "  var resp = { ok: !!ok, status: status,"
+            + "    headers: { get: function(name) {"
+            + "      var k = String(name).toLowerCase();"
+            + "      for (var h in hdrs) { if (String(h).toLowerCase() === k) return hdrs[h]; }"
+            + "      return null; } },"
             + "    text: function () { return Promise.resolve(bodyText); },"
             + "    json: function () { try { return Promise.resolve(JSON.parse(bodyText)); }"
             + "      catch (e) { return Promise.reject(e); } } };"
@@ -257,6 +329,21 @@ public class JsScraperRunner {
                         InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
                         final String text = in == null ? "" : readAll(in);
                         final boolean ok = status >= 200 && status < 300;
+                        // v1.21.0: pass response headers back — MovieBox
+                        // reads its anonymous token from the x-user header.
+                        final JSONObject hdrs = new JSONObject();
+                        try {
+                            java.util.Map<String, java.util.List<String>> hf = c.getHeaderFields();
+                            if (hf != null) {
+                                for (java.util.Map.Entry<String, java.util.List<String>> e : hf.entrySet()) {
+                                    if (e.getKey() == null) continue;
+                                    java.util.List<String> vals = e.getValue();
+                                    if (vals != null && !vals.isEmpty()) {
+                                        hdrs.put(e.getKey(), vals.get(0));
+                                    }
+                                }
+                            }
+                        } catch (Exception ignored) { }
                         fileLog("fetch " + url + " -> " + status
                                 + " bytes=" + text.length());
                         main.post(new Runnable() {
@@ -265,7 +352,8 @@ public class JsScraperRunner {
                                 webView.evaluateJavascript(
                                         "window.__fetchDeliver(" + id + ", " + status + ", "
                                                 + (ok ? "true" : "false") + ", "
-                                                + JSONObject.quote(text) + ");", null);
+                                                + JSONObject.quote(text) + ", "
+                                                + JSONObject.quote(hdrs.toString()) + ");", null);
                             }
                         });
                     } catch (final Exception e) {
@@ -450,6 +538,19 @@ public class JsScraperRunner {
     }
 
         @JavascriptInterface
+        public void onHomeRows(final String json) {
+            main.post(new Runnable() {
+                @Override public void run() {
+                    if (finished) return;
+                    fileLog("onHomeRows bytes=" + json.length());
+                    HomeRowsCallback cb = homePending;
+                    finish();
+                    if (cb != null) cb.onResult(json);
+                }
+            });
+        }
+
+        @JavascriptInterface
         public void onError(final String message) {
             main.post(new Runnable() {
                 @Override public void run() { fail(message); }
@@ -462,8 +563,10 @@ public class JsScraperRunner {
         Log.d(TAG, "JS scraper failed: " + message);
         fileLog("FAIL: " + message);
         Callback cb = pending;
+        HomeRowsCallback hcb = homePending;
         finish();
         if (cb != null) cb.onError(message);
+        if (hcb != null) hcb.onError(message);
     }
 
     private void finish() {

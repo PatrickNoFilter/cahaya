@@ -29,4 +29,36 @@ public class MetaDetails {
     public boolean isSeries() {
         return !videos.isEmpty();
     }
+
+    /** v1.26.4: build from a MovieBox detail (fallback metadata for
+     *  titles no catalog resolves). The id stays the synthetic
+     *  MovieBox id. For series the episode list is generated 1..N
+     *  from the detail's episode count, so Details shows the
+     *  episodes and Play opens S1E1. */
+    public static MetaDetails fromMovieBox(String id, String type, String name,
+            String poster, String desc, String year, String genres,
+            String rating, int episodes) {
+        MetaDetails d = new MetaDetails();
+        d.id = id;
+        d.type = type;
+        d.name = name;
+        d.poster = poster;
+        d.background = poster;
+        d.description = desc != null ? desc : "";
+        d.releaseInfo = year != null ? year : "";
+        d.genres = genres != null ? genres : "";
+        d.rating = rating != null ? rating : "";
+        d.episodeCount = episodes;
+        if ("series".equals(type) && episodes > 0) {
+            for (int n = 1; n <= episodes; n++) {
+                VideoInfo vi = new VideoInfo();
+                vi.id = id + ":1:" + n;
+                vi.title = "Episode " + n;
+                vi.season = 1;
+                vi.episode = n;
+                d.videos.add(vi);
+            }
+        }
+        return d;
+    }
 }

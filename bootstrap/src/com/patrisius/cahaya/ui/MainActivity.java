@@ -55,14 +55,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * v0.2 bootstrap: Nuvio-style left sidebar navigation (Home, Search,
- * Library, Addons, Settings) with a content pane on the right. All views
+ * Refresh, Addons, Settings) with a content pane on the right. All views
  * are framework widgets (no Leanback dependency); D-pad navigates with
  * left/right between sidebar and content.
  */
 public class MainActivity extends Activity {
 
-    private static final String[] MENU = {"Home", "Search", "Library", "Addons", "Plugins", "Settings"};
-    private static final String[] ICONS = {"🏠", "🔍", "📚", "🧩", "🔌", "⚙️"};
+    private static final String[] MENU = {"Home", "Search", "Music", "TV", "Refresh", "Settings"};
+    private static final String[] ICONS = {"🏠", "🔍", "🎵", "📺", "↻", "⚙️"};
 
     private final ExecutorService imgIo = Executors.newFixedThreadPool(4);
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -123,7 +123,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         refreshAccountLabel();
+        // v1.30.0: reconnect the Irama now-playing card (no-op when
+        // Irama is not installed or its service is not up).
+        if (iramaNow != null) iramaNow.connect();
         // Refresh Continue Watching when returning from player
         if (homeRows != null) {
             main.post(this::refreshContinueWatching);
@@ -136,9 +140,13 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        resumed = false;
         // v1.10.0: stop the phone banner rotation while another
         // screen (Details, player) is in front.
         stopWorldwideRotation();
+        // v1.30.0: drop the Irama session while in front of another
+        // app or screen; onResume reconnects.
+        if (iramaNow != null) iramaNow.disconnect();
         super.onPause();
     }
 
@@ -221,6 +229,9 @@ public class MainActivity extends Activity {
         brandLogo.setScaleType(ImageView.ScaleType.FIT_START);
         brandLogo.setPadding(dp(16), dp(20), dp(16), dp(12));
         // v1.10.0: the logo heads the drawer on phones, the rail on TV.
+        // v1.31.1: full size again — Addons/Plugins moved into
+        // Settings, so the sidebar is back to 5 rows and the banner
+        // fits (the 56dp cap from v1.30.5 is reverted).
         sidebar.addView(brandLogo, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -264,7 +275,27 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT));
 
-            row.setOnClickListener(v -> selectMenu(idx, true));
+            row.setOnClickListener(v -> {
+                // v1.30.0: Music is an action, not a screen — it opens
+                // Irama and leaves Cahaya exactly where it was (no
+                // selectMenu, so no content rebuild and no stale
+                // highlight on return).
+                if (idx == 2) {
+                    if (phoneMode) hidePhoneDrawer();
+                    IramaNowPlaying.openIrama(MainActivity.this);
+                    return;
+                }
+                // v1.32.0: TV is an action, not a screen — it opens
+                // the live stream page and leaves Cahaya exactly
+                // where it was (no selectMenu, so no content rebuild
+                // and no stale highlight on return).
+                if (idx == 3) {
+                    if (phoneMode) hidePhoneDrawer();
+                    openTv();
+                    return;
+                }
+                selectMenu(idx, true);
+            });
             row.setOnFocusChangeListener((v, hasFocus) -> paintMenuItem(idx, hasFocus));
             // v1.10.0: drawer rows span the full drawer width; the
             // old top strip used wrap-content rows side by side.
@@ -541,6 +572,7 @@ public class MainActivity extends Activity {
     }
 
     private void selectMenu(int idx, boolean moveFocus) {
+        int prev = selected;
         selected = idx;
         refreshMenuPaint();
         updateInfo(MENU[idx]);
@@ -554,14 +586,23 @@ public class MainActivity extends Activity {
                 stopWorldwideRotation();
             }
         }
-        content.removeAllViews();
         View screen;
         switch (idx) {
             case 1: screen = makeSearchScreen(); break;
-            case 2: screen = makeLibraryScreen(); break;
-            case 3: screen = makeAddonsScreen(); break;
-            case 4: screen = makePluginsScreen(); break;
-            case 5: screen = makeSettingsScreen(); break;
+            case 2: // v1.30.0: Music — normally intercepted by the row
+                    // click listener; if anything ever calls
+                    // selectMenu(2), open Irama and restore the
+                    // previous tab.
+                IramaNowPlaying.openIrama(this);
+                selectMenu(prev == 2 ? 0 : prev, false);
+                return;
+            case 3: // v1.32.0: TV — normally intercepted by the row
+                    // click listener; same guard as Music.
+                openTv();
+                selectMenu(prev == 3 ? 0 : prev, false);
+                return;
+            case 4: refreshHomeContent(); return;   // v1.20.0: Refresh replaces the empty Library tab
+            case 5: screen = makeSettingsScreen(); break;  // v1.31.1: Addons/Plugins moved inside Settings
             default:
                 // v0.10.12: reuse the built Home screen (see cachedHomeRoot
                 // note). Rebuilding it blanked all catalog rows on every
@@ -574,15 +615,23 @@ public class MainActivity extends Activity {
                 }
                 break;
         }
-        content.addView(screen, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
+        showScreen(screen, moveFocus);
         if (idx == 0) {
             // Refresh Playing History on every return to Home (new plays
             // since the last visit appear at the top). Idempotent: it
             // removes and re-adds its own row only.
             main.post(this::refreshContinueWatching);
         }
+    }
+
+    /** Swap the content pane to a screen. Used by selectMenu for
+     *  sidebar tabs and directly for sub-screens (Addons/Plugins,
+     *  which live inside Settings since v1.31.1). */
+    private void showScreen(View screen, boolean moveFocus) {
+        content.removeAllViews();
+        content.addView(screen, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
         if (moveFocus) {
             View f = screen.findFocus();
             if (f == null) {
@@ -592,6 +641,53 @@ public class MainActivity extends Activity {
                 f.requestFocus();
             }
         }
+    }
+
+    /**
+     * v1.32.0: Live TV. Fetches the iptv-org Indonesia playlist and
+     * merges the 7 curated YouTube live channels first (see
+     * IptvPlaylist), then opens the player in TV mode on the first
+     * channel (CNN Indonesia). Falls back to the cached list when
+     * the network is down.
+     */
+    private void openTv() {
+        TvLog.init(this);
+        android.widget.Toast.makeText(this, "Loading TV channels…",
+                android.widget.Toast.LENGTH_SHORT).show();
+        IptvPlaylist.load(this, channels -> {
+            if (channels == null || channels.isEmpty()) {
+                android.widget.Toast.makeText(this, "Couldn't load TV channels",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            TvChannelStore.set(channels, 0);
+            android.content.Intent it =
+                    new android.content.Intent(this, PlayerActivity.class);
+            it.putExtra("tv_mode", true);
+            it.putExtra("tv_index", 0);
+            it.putExtra("title", "Live TV");
+            startActivity(it);
+        });
+    }
+
+    /**
+     * v1.20.0: Refresh (replaces the empty Library tab). Clears the
+     * 12-hour trending cache + the negative-resolution cache, then goes
+     * to Home and re-fetches all rows fresh. If Home was already built,
+     * selectMenu reuses it without reloading rows, so we force a reload.
+     */
+    private void refreshHomeContent() {
+        com.patrisius.cahaya.addon.TrendingEngine.clearCache(this);
+        android.widget.Toast.makeText(this, "Refreshing…", android.widget.Toast.LENGTH_SHORT).show();
+        boolean wasLoaded = homeLoaded;
+        selectMenu(0, true);
+        if (wasLoaded) {
+            // v1.29.0: one home only — the MovieBox Trending row is
+            // merged into loadTrendingRows, so Refresh just reloads it.
+            loadTrendingRows();
+            main.post(this::refreshContinueWatching);
+        }
+        // If Home was just built, makeHomeScreen already started loadTrendingRows().
     }
 
     private View firstFocusable(View v) {
@@ -670,6 +766,10 @@ public class MainActivity extends Activity {
             // merged trending rows, crawled from the sources validated
             // 2026-10-26 (Tudum, Douban, K-Drama Crush, TMDB addon,
             // IMDb charts, AniList). See TrendingEngine.
+            // v1.29.0: one home only. The MovieBox Trending row is
+            // merged into loadTrendingRows as the first list below
+            // Playing History; the old Cahaya/MovieBox source switch
+            // (banner button, 1.26.0–1.28.0) is deleted.
             loadTrendingRows();
         } else if (!allItems.isEmpty()) {
             homeStatus.setVisibility(View.GONE);
@@ -747,7 +847,7 @@ public class MainActivity extends Activity {
      *  fixes. The stroke is inset by half its width so it stays
      *  fully inside the card bounds. The card's scale + title-
      *  color cues stay. */
-    private static class GoldBorderDrawable extends android.graphics.drawable.Drawable {
+    static class GoldBorderDrawable extends android.graphics.drawable.Drawable {
         private final android.graphics.Paint paint;
         private final float stroke, radius;
         GoldBorderDrawable(float strokePx, float radiusPx) {
@@ -966,8 +1066,16 @@ public class MainActivity extends Activity {
                 enabledPlugins.add(p);
             }
         }
+        // v1.23.0: pending counts every counted source exactly (see
+        // DetailsActivity — the old "+3" dropped late providers).
+        String[] jsProviders = {
+                JsScraperRunner.PROVIDER_4KHDHUB,
+                JsScraperRunner.PROVIDER_PLAYIMDB,
+                JsScraperRunner.PROVIDER_MOVIEBOX,
+                JsScraperRunner.PROVIDER_MOVIEBOX_TV,
+        };
         final AtomicInteger pending = new AtomicInteger(
-                addonUrls.size() + enabledPlugins.size() + 3);
+                addonUrls.size() + enabledPlugins.size() + 1 + jsProviders.length);
 
         final Runnable done = () -> {
             if (pending.decrementAndGet() > 0) {
@@ -1029,13 +1137,9 @@ public class MainActivity extends Activity {
                         collect.onError(e);
                     }
                 });
-        String[] jsProviders = {
-                JsScraperRunner.PROVIDER_4KHDHUB,
-                JsScraperRunner.PROVIDER_PLAYIMDB,
-        };
         for (String pid : jsProviders) {
             new JsScraperRunner(this, pid).run(moviedbId, it.type,
-                    season, episode,
+                    season, episode, scraperTitle, scraperYear,
                     new JsScraperRunner.Callback() {
                         @Override
                         public void onResult(List<StreamItem> items) {
@@ -1088,7 +1192,7 @@ public class MainActivity extends Activity {
                 i.putExtra("start_pos", resumePos);
             }
             startActivity(i);
-        });
+        }, PlayerActivity.lastPlayedUrl(this, it.videoId), "Last played");
     }
 
     private void playHistoryTorrent(ContinueWatching.Item it, StreamItem s) {
@@ -1166,6 +1270,13 @@ public class MainActivity extends Activity {
     // not inside homeRows, so it stays pinned at the top while the rows
     // scroll underneath it.
     private LinearLayout heroSlot = null;
+    // v1.30.0: Irama now-playing helper (v1.30.3: the card overlays
+    // the TOP of the hero banner instead of sitting under it).
+    private IramaNowPlaying iramaNow = null;
+    // v1.30.3: Activity has no isResumed() — track it for makeHero,
+    // which runs off the async trending callback and needs to know
+    // whether a connect() is safe yet.
+    private boolean resumed = false;
     private ImageView heroBg = null;
     private TextView heroTitle = null;
     private TextView heroMeta = null;
@@ -1218,6 +1329,19 @@ public class MainActivity extends Activity {
 
     private long bannerIntervalMs() {
         return bannerIntervalSec() * 1000L;
+    }
+
+    /** v1.24.0 audio output setting (WuPlay idea): "stereo" is the
+     *  current behaviour and the default. */
+    private String audioOutput() {
+        return displayPrefs().getString("audio_output", "stereo");
+    }
+
+    private String audioOutputLabel() {
+        String o = audioOutput();
+        if ("passthrough".equals(o)) return "Passthrough";
+        if ("dd51".equals(o)) return "Dolby Digital 5.1";
+        return "Stereo";
     }
 
     private boolean isSolidBackground() {
@@ -1342,7 +1466,17 @@ public class MainActivity extends Activity {
      *  at index 0, so it stays first). */
     private java.util.List<View> trendingViews = null;
 
+    // v1.26.0: home source switch (test) — which feed fills the rows
+    // v1.29.0: the single merged MovieBox row (Trending) below
+    // Playing History, rendered by loadMovieBoxFirstRow. The old
+    // Cahaya/MovieBox source switch (home_source pref, banner button,
+    // 1.26.0–1.28.0) is deleted; the 10 country rows went with it.
+    private java.util.List<View> movieBoxViews = null;
+
     private void loadTrendingRows() {
+        // v1.29.0: the MovieBox Trending row merges in as the first
+        // list below Playing History, ahead of the Cahaya rows.
+        loadMovieBoxFirstRow();
         if (homeStatus != null) homeStatus.setText("Loading trending…");
         com.patrisius.cahaya.addon.TrendingEngine.loadRows(this,
                 new AddonManager.Callback<java.util.Map<String, java.util.List<CatalogItem>>>() {
@@ -1412,6 +1546,148 @@ public class MainActivity extends Activity {
                 });
     }
 
+    /** v1.29.0: fetch the MovieBox home lists through the JS provider
+     *  and render ONLY the first section (Trending) as the first list
+     *  below Playing History, ahead of the Cahaya trending rows.
+     *  Called from loadTrendingRows, so the two loaders run side by
+     *  side; this one stays silent (no homeStatus text — the trending
+     *  loader owns the status) and a failure just means the row does
+     *  not appear. Cards reuse makeTrendingRow/makeTrendingCard; the
+     *  1.26.4 detail fallback still applies, so unresolvable titles
+     *  keep their MovieBox detail and still play. */
+    private void loadMovieBoxFirstRow() {
+        if (homeRows == null) return;
+        if (movieBoxViews != null) {
+            for (View v : movieBoxViews) homeRows.removeView(v);
+        }
+        movieBoxViews = new java.util.ArrayList<>();
+        if (heroView == null) {
+            heroView = makeHero();
+            if (heroSlot != null && heroView.getParent() != heroSlot) {
+                if (heroView.getParent() instanceof ViewGroup) {
+                    ((ViewGroup) heroView.getParent()).removeView(heroView);
+                }
+                heroSlot.addView(heroView);
+            }
+        }
+        new com.patrisius.cahaya.jsrunner.JsScraperRunner(
+                this, com.patrisius.cahaya.jsrunner.JsScraperRunner.PROVIDER_MOVIEBOX)
+                .runHomeRows(new com.patrisius.cahaya.jsrunner.JsScraperRunner.HomeRowsCallback() {
+                    @Override
+                    public void onResult(String json) {
+                        if (homeRows == null) return;
+                        final java.util.List<String> names = new java.util.ArrayList<>();
+                        final java.util.List<java.util.List<com.patrisius.cahaya.addon.CatalogItem>> sects =
+                                new java.util.ArrayList<>();
+                        try {
+                            org.json.JSONArray rows = new org.json.JSONArray(json);
+                            for (int i = 0; i < rows.length(); i++) {
+                                org.json.JSONObject r = rows.optJSONObject(i);
+                                if (r == null) continue;
+                                String name = r.optString("name", "");
+                                org.json.JSONArray arr = r.optJSONArray("items");
+                                if (name.isEmpty() || arr == null || arr.length() == 0) continue;
+                                java.util.List<com.patrisius.cahaya.addon.CatalogItem> cands =
+                                        new java.util.ArrayList<>();
+                                for (int j = 0; j < arr.length(); j++) {
+                                    org.json.JSONObject it = arr.optJSONObject(j);
+                                    if (it == null) continue;
+                                    String title = it.optString("title", "");
+                                    String poster = it.optString("poster", "");
+                                    String sid = it.optString("subjectId", "");
+                                    String type = it.optString("type", "series");
+                                    if (title.isEmpty()) continue;
+                                    // v1.26.4: the MovieBox detail
+                                    // fallback (synopsis/genres/rating/
+                                    // episode count), attached by
+                                    // getHomeRows for titles no catalog
+                                    // resolves.
+                                    String desc = it.optString("desc", "");
+                                    String genre = it.optString("genre", "");
+                                    String rating = it.optString("rating", "");
+                                    int eps = it.optInt("episodes", 0);
+                                    int yr = it.optInt("year", 0);
+                                    cands.add(new com.patrisius.cahaya.addon.CatalogItem(
+                                            "trending_moviebox_" + sid, type, title, poster,
+                                            desc.isEmpty() ? null : desc,
+                                            genre.isEmpty() ? null : genre,
+                                            rating.isEmpty() ? null : rating,
+                                            yr, eps));
+                                }
+                                if (cands.isEmpty()) continue;
+                                names.add(name);
+                                sects.add(cands);
+                            }
+                        } catch (Exception e) {
+                            // v1.29.0: silent — the row just does not appear.
+                            return;
+                        }
+                        if (sects.isEmpty()) {
+                            return;
+                        }
+                        // v1.26.4: resolve the titles to real
+                        // Cinemeta/TMDB ids where possible — but
+                        // nothing is dropped anymore. A title no
+                        // catalog resolves keeps its synthetic id
+                        // and its MovieBox detail (the fallback),
+                        // so it still renders and still plays.
+                        // v1.29.0: only the first section (Trending)
+                        // is merged into the Cahaya home.
+                        final boolean[] seeded = new boolean[]{heroItem != null};
+                        renderMovieBoxSections(names.subList(0, 1), sects.subList(0, 1), 0, seeded, false);
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        // v1.29.0: silent — the row just does not appear.
+                    }
+                });
+    }
+
+    /** v1.26.4: resolve + render one MovieBox section, then chain to
+     *  the next, so rows appear in section order below Playing History.
+     *  The insert position is computed at render time from the rows
+     *  already placed, so an empty section can't shift the next row
+     *  past the end of the list. v1.29.0: touchStatus=false when the
+     *  row is merged into the Cahaya home — the trending loader owns
+     *  the status text there, and a failed merge must not print a
+     *  MovieBox error over it. */
+    private void renderMovieBoxSections(final java.util.List<String> names,
+            final java.util.List<java.util.List<com.patrisius.cahaya.addon.CatalogItem>> sects,
+            final int pos, final boolean[] seeded, final boolean touchStatus) {
+        if (homeRows == null || pos >= sects.size()) {
+            if (!touchStatus) return;
+            if (homeStatus != null) homeStatus.setVisibility(View.GONE);
+            if ((movieBoxViews == null || movieBoxViews.isEmpty()) && homeStatus != null) {
+                homeStatus.setText("Couldn't load MovieBox rows — check connection and reopen Home.");
+                homeStatus.setVisibility(View.VISIBLE);
+            }
+            return;
+        }
+        final String rowName = names.get(pos);
+        com.patrisius.cahaya.addon.TrendingEngine.resolveSingleRow(
+                this, sects.get(pos),
+                new com.patrisius.cahaya.addon.TrendingEngine.RowListener() {
+                    @Override
+                    public void onRow(String key, java.util.List<com.patrisius.cahaya.addon.CatalogItem> resolved) {
+                        if (homeRows == null || resolved == null || resolved.isEmpty()) return;
+                        if (!seeded[0]) {
+                            updateHero(resolved.get(0));
+                            seeded[0] = true;
+                        }
+                        int at = (continueRow != null ? 1 : 0) + movieBoxViews.size();
+                        View row = makeTrendingRow(rowName, resolved);
+                        movieBoxViews.add(row);
+                        homeRows.addView(row, at);
+                    }
+
+                    @Override
+                    public void onDone() {
+                        renderMovieBoxSections(names, sects, pos + 1, seeded, touchStatus);
+                    }
+                });
+    }
+
     private View makeTrendingRow(String header, java.util.List<CatalogItem> items) {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -1452,10 +1728,11 @@ public class MainActivity extends Activity {
         return col;
     }
 
-    /** Trending card (v1.4.0): rows contain only resolved items,
-     *  so cards carry real Cinemeta/TMDB ids and open Details
-     *  directly. Focus behavior is identical, including the hero
-     *  follow. */
+    /** Trending card (v1.4.0): rows contain resolved items (real
+     *  Cinemeta/TMDB ids) plus, since v1.26.4, MovieBox-fallback
+     *  items (synthetic ids + attached MovieBox detail) — both open
+     *  Details directly. Focus behavior is identical, including the
+     *  hero follow. */
     private View makeTrendingCard(final CatalogItem item) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -1507,6 +1784,31 @@ public class MainActivity extends Activity {
             Intent i = new Intent(MainActivity.this, DetailsActivity.class);
             i.putExtra("id", item.id);
             i.putExtra("type", item.type);
+            startActivity(i);
+            return;
+        }
+        // v1.26.4: a MovieBox item no catalog could resolve keeps
+        // its synthetic id and carries the MovieBox detail — open
+        // Details from that detail directly, instead of the Cinemeta
+        // title search (which is the search that failed for it in
+        // the first place — e.g. Alas Roban, which Cinemeta does
+        // not carry at all).
+        if (item.id != null && item.id.startsWith("trending_") && item.hasMbDetail()) {
+            Intent i = new Intent(MainActivity.this, DetailsActivity.class);
+            i.putExtra("id", item.id);
+            i.putExtra("type", item.type);
+            try {
+                JSONObject mb = new JSONObject();
+                mb.put("name", item.name);
+                mb.put("poster", item.poster);
+                mb.put("desc", item.mbDesc);
+                mb.put("year", item.mbYear > 0 ? String.valueOf(item.mbYear) : "");
+                mb.put("genres", item.mbGenres);
+                mb.put("rating", item.mbRating);
+                mb.put("episodes", item.mbEpisodes);
+                i.putExtra("mb_meta", mb.toString());
+            } catch (Exception ignored) {
+            }
             startActivity(i);
             return;
         }
@@ -1637,22 +1939,52 @@ public class MainActivity extends Activity {
         heroDesc.setEllipsize(android.text.TextUtils.TruncateAt.END);
         text.addView(heroDesc);
 
+        // v1.26.2: on TV the banner is neither focusable nor clickable
+        // — it was swallowing the remote: focus landed on the banner
+        // and OK opened Details instead of reaching the rows below.
+        // With the banner out of the focus chain, the remote goes
+        // straight to the rows. Phones keep tap-to-Details.
+        // (v1.29.0: the top-right page-selector button that used to
+        // sit here is deleted — one home only now.)
         // Click opens details for whichever title the banner shows now.
         // v1.2.0: a trending hero item has a synthetic id, so it goes
         // through the title-search path like a trending card click.
-        hero.setFocusable(true);
-        hero.setClickable(true);
-        hero.setOnClickListener(v -> {
-            if (heroItem == null) return;
-            if (heroItem.id != null && heroItem.id.startsWith("trending_")) {
-                openTrendingItem(heroItem);
-                return;
-            }
-            Intent i = new Intent(MainActivity.this, DetailsActivity.class);
-            i.putExtra("id", heroItem.id);
-            i.putExtra("type", heroItem.type);
-            startActivity(i);
-        });
+        if (phoneMode) {
+            hero.setFocusable(true);
+            hero.setClickable(true);
+            hero.setOnClickListener(v -> {
+                if (heroItem == null) return;
+                if (heroItem.id != null && heroItem.id.startsWith("trending_")) {
+                    openTrendingItem(heroItem);
+                    return;
+                }
+                Intent i = new Intent(MainActivity.this, DetailsActivity.class);
+                i.putExtra("id", heroItem.id);
+                i.putExtra("type", heroItem.type);
+                startActivity(i);
+            });
+        } else {
+            hero.setFocusable(false);
+            hero.setClickable(false);
+        }
+
+        // v1.30.3: Irama now-playing card overlays the TOP of the
+        // banner (transparent, over the backdrop). Added last so it
+        // draws above the backdrop; GONE unless Irama is playing.
+        // makeHero runs off the trending callback, which can land
+        // after onResume — connect here too when resumed (onResume's
+        // own connect() is a no-op once the card exists).
+        if (iramaNow == null) iramaNow = new IramaNowPlaying(this);
+        View npCard = iramaNow.getView();
+        if (npCard.getParent() instanceof ViewGroup) {
+            ((ViewGroup) npCard.getParent()).removeView(npCard);
+        }
+        FrameLayout.LayoutParams npLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        npLp.gravity = android.view.Gravity.TOP;
+        hero.addView(npCard, npLp);
+        if (resumed) iramaNow.connect();
 
         return hero;
     }
@@ -1793,6 +2125,22 @@ public class MainActivity extends Activity {
             return;
         }
         heroDesc.setText("Loading info…");
+        // v1.26.4: MovieBox fallback — a title Cinemeta/TMDB could
+        // not resolve keeps its synthetic id, so a /meta fetch would
+        // fail silently and the banner would stay blank. The item
+        // carries the MovieBox detail instead; apply it directly
+        // (no fetch, no cache write — the detail is re-fetched on
+        // every home load, so it cannot go stale).
+        if (item.hasMbDetail()) {
+            com.patrisius.cahaya.addon.MetaDetails mb =
+                    com.patrisius.cahaya.addon.MetaDetails.fromMovieBox(
+                            item.id, item.type, item.name, item.poster,
+                            item.mbDesc,
+                            item.mbYear > 0 ? String.valueOf(item.mbYear) : "",
+                            item.mbGenres, item.mbRating, item.mbEpisodes);
+            applyHeroMeta(mb);
+            return;
+        }
         mgr.meta(metaAddonFor(item.id), item.type, metaId,
                 new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
                     @Override
@@ -2093,7 +2441,7 @@ public class MainActivity extends Activity {
                                 Toast.makeText(MainActivity.this,
                                         "Signed in as " + p.name,
                                         Toast.LENGTH_SHORT).show();
-                                selectMenu(5, false);
+                                selectMenu(4, false);
                             }
 
                             @Override
@@ -2138,7 +2486,7 @@ public class MainActivity extends Activity {
                         public void onResult(String addonName) {
                             Toast.makeText(MainActivity.this,
                                     "Installed: " + addonName, Toast.LENGTH_SHORT).show();
-                            selectMenu(3, false);
+                            showScreen(makeAddonsScreen(), false);
                         }
 
                         @Override
@@ -2473,28 +2821,12 @@ public class MainActivity extends Activity {
         return col;
     }
 
-    // ---------------- Library ----------------
+    // ---------------- Sites (v1.23.0) ----------------
 
-    private View makeLibraryScreen() {
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(0, dp(60), 0, 0);
-
-        TextView h = new TextView(this);
-        h.setText("Library");
-        h.setTextSize(28);
-        h.setTextColor(Color.WHITE);
-        h.setPadding(0, 0, 0, dp(12));
-        col.addView(h);
-
-        TextView empty = new TextView(this);
-        empty.setText("Your library is empty.\n\nSave titles here from the details screen (v0.3).");
-        empty.setTextColor(Color.GRAY);
-        empty.setTextSize(16);
-        col.addView(empty);
-        return col;
-    }
-
+    /** FMHY's streaming-site directory (video.md, refreshed every
+     *  12 h from GitHub; bundled copy is the fallback). Tap a site to
+     *  open it in the site browser, where the sniffer catches the
+     *  stream the page starts. Long-press a row to favorite it. */
     // ---------------- Addons ----------------
 
     private View makeAddonsScreen() {
@@ -2663,7 +2995,7 @@ public class MainActivity extends Activity {
                     public void onResult(String addonName) {
                         Toast.makeText(MainActivity.this,
                                 "Installed: " + addonName, Toast.LENGTH_SHORT).show();
-                        selectMenu(3, false);
+                        showScreen(makeAddonsScreen(), false);
                     }
 
                     @Override
@@ -2836,6 +3168,24 @@ public class MainActivity extends Activity {
         h.setPadding(0, 0, 0, dp(12));
         col.addView(h);
 
+        // v1.31.1: Addons and Plugins moved here from the sidebar
+        // (frees two rows so the logo fits again). They open as
+        // sub-screens; the sidebar keeps Settings highlighted.
+        Button addonsBtn = new Button(this);
+        addonsBtn.setFocusable(true);
+        addonsBtn.setTag("setting:addons");
+        addonsBtn.setText("🧩 Addons");
+        addonsBtn.setOnClickListener(v -> showScreen(makeAddonsScreen(), true));
+        col.addView(addonsBtn, new LinearLayout.LayoutParams(dp(280),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        Button pluginsBtn = new Button(this);
+        pluginsBtn.setFocusable(true);
+        pluginsBtn.setTag("setting:plugins");
+        pluginsBtn.setText("🔌 Plugins");
+        pluginsBtn.setOnClickListener(v -> showScreen(makePluginsScreen(), true));
+        col.addView(pluginsBtn, new LinearLayout.LayoutParams(dp(280),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
         // Google Account (v0.10.8 device-code sign-in)
         TextView gh = new TextView(this);
         gh.setText("Google Account");
@@ -2869,14 +3219,14 @@ public class MainActivity extends Activity {
                             refreshAccountLabel();
                             Toast.makeText(MainActivity.this,
                                     "Signed out", Toast.LENGTH_SHORT).show();
-                            selectMenu(5, false);
+                            selectMenu(4, false);
                             refocusSettingRow("google");
                         }
 
                         @Override
                         public void onError(Exception e) {
                             refreshAccountLabel();
-                            selectMenu(5, false);
+                            selectMenu(4, false);
                             refocusSettingRow("google");
                         }
                     }));
@@ -2909,7 +3259,7 @@ public class MainActivity extends Activity {
                             .putInt("banner_interval_sec", which + 2).apply();
                     // Rotation re-reads the interval on every tick, so a
                     // new value applies on Home without restarting it.
-                    selectMenu(5, false);
+                    selectMenu(4, false);
                     refocusSettingRow("Banner auto-change");
                 });
             });
@@ -2924,7 +3274,7 @@ public class MainActivity extends Activity {
                         .putString("bg_mode", which == 1 ? "solid" : "blur")
                         .apply();
                 applyBackgroundMode();
-                selectMenu(5, false);
+                selectMenu(4, false);
                 refocusSettingRow("Background");
             });
         });
@@ -2943,11 +3293,28 @@ public class MainActivity extends Activity {
                     displayPrefs().edit()
                             .putString("bg_color", keys[which]).apply();
                     applyBackgroundMode();
-                    selectMenu(5, false);
+                    selectMenu(4, false);
                     refocusSettingRow("Background color");
                 });
             });
         }
+
+        // v1.24.0: audio output (WuPlay idea) — Stereo is the current
+        // behaviour and stays the default; applies on the next playback.
+        addSettingOptionRow(col, "Audio output", audioOutputLabel(), v -> {
+            String[] names = {"Stereo", "Dolby Digital 5.1", "Passthrough"};
+            String[] keys = {"stereo", "dd51", "passthrough"};
+            int checked = 0;
+            for (int i = 0; i < keys.length; i++) {
+                if (keys[i].equals(audioOutput())) checked = i;
+            }
+            showSingleChoiceDialog("Audio output", names, checked, (d, which) -> {
+                d.dismiss();
+                displayPrefs().edit().putString("audio_output", keys[which]).apply();
+                selectMenu(4, false);
+                refocusSettingRow("Audio output");
+            });
+        });
 
         // v1.11.0 audit: Version is now read from the package (it was
         // a hardcoded string that had to be re-edited on every bump);
@@ -3069,7 +3436,7 @@ public class MainActivity extends Activity {
                     c.setReadTimeout(30000);
                     c.setRequestProperty("User-Agent", "Cahaya/0.7.0 (Android TV)");
                     InputStream in = c.getInputStream();
-                    src = BitmapFactory.decodeStream(in);
+                    src = PosterUtil.decodeSampled(in, 320);
                     in.close();
                     if (src != null) memCache.put(u, src);
                 }
@@ -3176,7 +3543,7 @@ public class MainActivity extends Activity {
                 c.setReadTimeout(30000);
                 c.setRequestProperty("User-Agent", "Cahaya/0.7.0 (Android TV)");
                 InputStream in = c.getInputStream();
-                final Bitmap bmp = BitmapFactory.decodeStream(in);
+                final Bitmap bmp = PosterUtil.decodeSampled(in, 960);
                 in.close();
                 if (bmp != null) {
                     memCache.put(url, bmp);

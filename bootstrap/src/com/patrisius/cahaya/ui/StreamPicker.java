@@ -18,11 +18,11 @@ import java.util.List;
 
 /**
  * Stream source picker (v1.5.1): streams grouped into COLUMNS by
- * source, in fixed order — PlayIMDb, Torrentio, 4khdhub — instead of
- * one flat list. Streams from any other source (e.g. FibWatch) go in
- * a trailing "Other" column, only when present, so nothing playable
- * silently disappears. Shared by Details Play, the player's Next
- * button, and Playing History clicks.
+ * source, in fixed order — PlayIMDb, Torrentio, 4khdhub, MovieBox
+ * (v1.21.0) — instead of one flat list. Streams from any other source
+ * (e.g. FibWatch) go in a trailing "Other" column, only when present,
+ * so nothing playable silently disappears. Shared by Details Play, the
+ * player's Next button, and Playing History clicks.
  * D-pad: Up/Down moves within a column, Left/Right moves between
  * columns (same row where possible). Each column scrolls vertically
  * on its own, so long Torrentio lists stay reachable; the whole
@@ -68,20 +68,41 @@ public class StreamPicker {
         }
     }
 
-    /** Group key: 0 = PlayIMDb, 1 = Torrentio, 2 = 4khdhub, 3 = other. */
+    /** Group key: 0 = PlayIMDb, 1 = Torrentio, 2 = 4khdhub, 3 = MovieBox,
+     *  4 = MovieBox TV, 5 = other. */
     private static int groupOf(StreamItem s) {
         String src = s.source == null ? "" : s.source;
         if ("playimdb".equals(src)) return 0;
         if (src.contains("torrentio")) return 1;
         if ("4khdhub".equals(src)) return 2;
-        return 3;
+        if ("moviebox".equals(src)) return 3;
+        if ("movieboxtv".equals(src)) return 4;
+        return 5;
     }
 
     public static void show(final Activity activity, String title,
                             List<StreamItem> streams, final PickListener listener) {
+        show(activity, title, streams, listener, null, null);
+    }
+
+    /** v1.24.0 (WuPlay idea): tag one stream — the one playing now
+     *  ("Playing") or the one played last for this title ("Last
+     *  played"). The tag is appended to the option title. */
+    private static String tagTitle(StreamItem s, String hlUrl, String hlLabel) {
+        if (hlUrl != null && hlLabel != null && hlUrl.equals(s.url)) {
+            return s.title + "  \u2022  " + hlLabel;
+        }
+        return s.title;
+    }
+
+    public static void show(final Activity activity, String title,
+                            List<StreamItem> streams, final PickListener listener,
+                            String highlightUrl, String highlightLabel) {
         Column[] cols = new Column[]{
                 new Column("PlayIMDb"), new Column("Torrentio"),
-                new Column("4khdhub"), new Column("Other"),
+                new Column("4khdhub"), new Column("MovieBox"),
+                new Column("MovieBox TV"),
+                new Column("Other"),
         };
         for (StreamItem s : streams) cols[groupOf(s)].items.add(s);
         // Seeders-desc within each column (stable: scrapers keep order).
@@ -120,7 +141,7 @@ public class StreamPicker {
             for (Column c : shown) {
                 float w = measure(headerPaint, c.header);
                 for (StreamItem s : c.items) {
-                    w = Math.max(w, measure(titlePaint, s.title));
+                    w = Math.max(w, measure(titlePaint, tagTitle(s, highlightUrl, highlightLabel)));
                     w = Math.max(w, measure(subPaint, sub(s)));
                 }
                 colWidths.add(Math.min((int) Math.ceil(w) + dp(activity, 8), capPx));
@@ -193,7 +214,7 @@ public class StreamPicker {
                 // whole link text shows; the info line stays 1.
                 // Every option is still the same height (2+1).
                 final TextView titleV = new TextView(activity);
-                titleV.setText(s.title);
+                titleV.setText(tagTitle(s, highlightUrl, highlightLabel));
                 titleV.setTextSize(16);
                 titleV.setTextColor(Color.WHITE);
                 titleV.setMaxLines(2);

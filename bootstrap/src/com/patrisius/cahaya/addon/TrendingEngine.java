@@ -772,6 +772,15 @@ public class TrendingEngine {
         }
     }
 
+    /** v1.20.0: clear the cached rows AND the negative-resolution cache,
+     *  so the next loadRows() fetches fresh from all sources. */
+    public static void clearCache(Context ctx) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().remove("rows").apply();
+        ctx.getSharedPreferences(NEG_PREFS, Context.MODE_PRIVATE)
+                .edit().clear().apply();
+    }
+
     /** Fetch trending rows (cached-first, background refresh).
      *  Callback runs on the main thread. onError only when there is
      *  no cache and the fetch produced nothing at all. */
@@ -1105,8 +1114,72 @@ public class TrendingEngine {
         }).start();
     }
 
+    /** v1.26.3: resolve one foreign row (e.g. MovieBox home lists) the
+     *  same way resolveRows resolves a crawled row — but the row key
+     *  is not one of ROW_KEYS (which also drives loadRows' merge, so
+     *  no new key may be added there) and each item carries its own
+     *  type (movie/series from the provider), so the type comes from
+     *  the item, not the key. Resolved items carry real Cinemeta/TMDB
+     *  ids, so the hero meta fetch and Details taps work like
+     *  trending rows. */
+    public static void resolveSingleRow(final Context ctx,
+            final List<CatalogItem> cands,
+            final RowListener listener) {
+        final Handler main = new Handler(Looper.getMainLooper());
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final CatalogItem[] out = new CatalogItem[cands.size()];
+                ExecutorService pool = Executors.newFixedThreadPool(8);
+                final CountDownLatch latch =
+                        new CountDownLatch(cands.size());
+                for (int i = 0; i < cands.size(); i++) {
+                    final int idx = i;
+                    final CatalogItem it = cands.get(i);
+                    pool.execute(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                String type = it.type != null && !it.type.isEmpty()
+                                        ? it.type : "series";
+                                out[idx] = resolveOne(ctx, it, type);
+                            } finally {
+                                latch.countDown();
+                            }
+                        }
+                    });
+                }
+                try {
+                    latch.await();
+                } catch (InterruptedException ignored) {
+                }
+                pool.shutdown();
+                // v1.26.4: NO filtering. A title Cinemeta/TMDB cannot
+                // resolve is kept as its original candidate (with its
+                // MovieBox detail) instead of being dropped — the
+                // content is playable via MovieBox even when no
+                // catalog carries its metadata. Resolution is now
+                // best-effort enrichment only: a resolved item
+                // carries its real id, an unresolved one keeps the
+                // synthetic id, and the row keeps its original order.
+                final List<CatalogItem> merged = new ArrayList<>();
+                for (int i = 0; i < cands.size() && merged.size() < 20; i++) {
+                    merged.add(out[i] != null ? out[i] : cands.get(i));
+                }
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        listener.onRow("moviebox", merged);
+                        listener.onDone();
+                    }
+                });
+            }
+        }).start();
+    }
+
     /** Resolve one crawled title to a metadata entry with picture
-     *  AND info, or null (dropped from the row). Order: cached
+     *  AND info, or null (v1.26.4: the caller keeps the original
+     *  candidate instead of dropping it). Order: cached
      *  resolution, Cinemeta exact, TMDB exact (unambiguous only),
      *  then — only for displays containing CJK — a first-result
      *  search on the raw CJK title (TMDB first, then Cinemeta),
