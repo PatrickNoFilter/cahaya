@@ -427,29 +427,41 @@ function collectStreams(playData) {
   });
 }
 
-async function fetchSubtitles(subjectId, streamId, langLabel) {
+// v1.34.0: MovieBox's own subtitles, wired into the player.
+// Verified live 2026-11-11 (phone, home IP): get-stream-captions
+// (streamId = the stream's resourceId) is the reliable endpoint —
+// Avatar 13 caps, Wednesday S1E1 15 caps; get-ext-captions works
+// for movies but returned 0 for Wednesday S1E1, so it is only a
+// fallback. URLs are CloudFront-signed .srt, plain-GET fetchable;
+// some entries are dead (404) and fail soft at download time.
+// language is the CODE (c.lan) so the ranker can match the
+// preferred language; the label is the display name + MovieBox.
+async function fetchSubtitles(subjectId, streamId, langLabel, episode) {
   var subs = [];
+  var seen = {};
+  function pushCaps(caps) {
+    if (!Array.isArray(caps)) return;
+    caps.forEach(function (c) {
+      if (!c.url || seen[c.url]) return;
+      seen[c.url] = true;
+      var code = c.lan || c.language || "en";
+      var disp = c.lanName || c.language || code;
+      subs.push({ url: c.url, language: code,
+        name: disp + " · MovieBox" });
+    });
+  }
   try {
     var u1 = API_BASE + "/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId="
       + subjectId + "&streamId=" + encodeURIComponent(streamId);
     var r1 = await mbRequest("GET", u1, null);
-    var caps1 = r1.data && r1.data.data && r1.data.data.extCaptions;
-    if (Array.isArray(caps1)) caps1.forEach(function (c) {
-      if (c.url) subs.push({ url: c.url, language: c.language || c.lanName || c.lan || "en",
-        name: (c.lanName || c.language || "Subtitle") + " (" + langLabel + ")",
-        headers: { "Referer": API_BASE } });
-    });
+    pushCaps(r1.data && r1.data.data && r1.data.data.extCaptions);
   } catch (e) { /* ignore */ }
   try {
     var u2 = API_BASE + "/wefeed-mobile-bff/subject-api/get-ext-captions?subjectId="
-      + subjectId + "&resourceId=" + encodeURIComponent(streamId) + "&episode=0";
+      + subjectId + "&resourceId=" + encodeURIComponent(streamId)
+      + "&episode=" + (episode || 0);
     var r2 = await mbRequest("GET", u2, null);
-    var caps2 = r2.data && r2.data.data && r2.data.data.extCaptions;
-    if (Array.isArray(caps2)) caps2.forEach(function (c) {
-      if (c.url) subs.push({ url: c.url, language: c.lan || c.lanName || c.language || "en",
-        name: (c.lanName || c.lan || "Subtitle") + " (" + langLabel + ")",
-        headers: { "Referer": API_BASE } });
-    });
+    pushCaps(r2.data && r2.data.data && r2.data.data.extCaptions);
   } catch (e) { /* ignore */ }
   return subs;
 }
@@ -493,6 +505,27 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
       if (!playData) continue;
       // resources[] is the TV shape: {url, resolution, codec, duration, resourceId}
       var resources = Array.isArray(playData.resources) ? playData.resources : [];
+      var streamsList = collectStreams(playData);
+      // v1.34.1: this dub's captions, fetched ONCE and attached to
+      // EVERY stream from the dub (resources[] and streamsList alike).
+      var dubSubs = [];
+      var dubStreamId = null;
+      for (var si = 0; si < resources.length; si++) {
+        var rv = resources[si];
+        var ru = rv.url || "";
+        if (!ru) continue;
+        if (ru.indexOf("b164fbfb4347792950bdfbfb563d39d9") >= 0) continue;
+        if (/\/other\/\d{4}\/\d{2}\/\d{2}\//.test(ru)) continue;
+        if (!rv.resourceId) continue;
+        dubStreamId = String(rv.resourceId);
+        break;
+      }
+      if (!dubStreamId) {
+        for (var sj = 0; sj < streamsList.length; sj++) {
+          if (streamsList[sj].id) { dubStreamId = String(streamsList[sj].id); break; }
+        }
+      }
+      if (dubStreamId) dubSubs = await fetchSubtitles(item.id, dubStreamId, item.lang, episode);
       for (var j = 0; j < resources.length; j++) {
         var res = resources[j];
         var rawUrl = res.url || "";
@@ -502,8 +535,7 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
         var qn = qualityNum(res.resolution || res.quality);
         var quality = qn ? qn + "p" : "Auto";
         var audio = audioLabel({}, item.lang);
-        var subs = [];
-        if (res.resourceId) subs = await fetchSubtitles(item.id, String(res.resourceId), item.lang);
+        var subs = dubSubs;
         allStreams.push({
           name: "MovieBox TV",
           title: mediaTitle + (season > 0 ? " S" + season + "E" + episode : "")
@@ -514,7 +546,6 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
         });
       }
       // streams[] fallback (same shape as the phone play-info)
-      var streamsList = collectStreams(playData);
       for (var k = 0; k < streamsList.length; k++) {
         var stream = streamsList[k];
         var rawUrl2 = stream.url || stream.playUrl || stream.resourceLink || stream.streamUrl || "";
@@ -527,8 +558,7 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
           : formatType(rawUrl2);
         var qn2 = qualityNum(stream.resolutions || stream.resolution || stream.quality);
         var quality2 = qn2 ? qn2 + "p" : "Auto";
-        var streamId2 = stream.id || (item.id + "|" + season + "|" + episode);
-        var subs2 = await fetchSubtitles(item.id, streamId2, item.lang);
+        var subs2 = dubSubs;
         allStreams.push({
           name: "MovieBox TV",
           title: mediaTitle + (season > 0 ? " S" + season + "E" + episode : "")
@@ -553,6 +583,15 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
     return (rank[(b.quality || "").toLowerCase()] || 0)
       - (rank[(a.quality || "").toLowerCase()] || 0);
   });
+  // v1.34.2 diag: how many streams carry provider subtitles (and how
+  // many subs each) — the picker still shows "None found" on 1.34.1.
+  try {
+    var _diag = allStreams.map(function (s) {
+      return (s.provider || "?") + ":" + (s.quality || "?") + "="
+        + ((s.subtitles && s.subtitles.length) || 0);
+    }).join(", ");
+    console.log("[MovieBox TV] return " + allStreams.length + " streams | " + _diag);
+  } catch (eD) { }
   return allStreams;
 }
 

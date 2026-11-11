@@ -12,6 +12,10 @@ public class StreamItem {
      *  Origin/Referer/User-Agent. Null = none. Carried to mpv via the
      *  PlayerActivity intent; without them such streams 403. */
     public java.util.Map<String, String> headers = null;
+    /** Subtitles the provider attached to this stream (v1.34.0:
+     *  MovieBox's own captions). Null/empty = none. Carried to the
+     *  player intent as sub_urls/sub_langs/sub_labels. */
+    public java.util.List<SubtitleItem> subtitles = null;
 
     public StreamItem(String url, String title, String source) {
         this(url, title, source, -1);

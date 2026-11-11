@@ -181,6 +181,7 @@ function utf8Bytes(s) {
 
 // ---------------- API constants ----------------
 var API_BASE = "https://api3.aoneroom.com";
+var TV_BASE = "https://tv.aoneroom.com";   // v1.34.3: caption fallback (see below)
 var PLAYER_BASE = "https://moviebox.ph";
 var TOKEN_URL = "https://apig.inmoviebox.com/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1";
 var PLAYER_UA = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
@@ -458,29 +459,45 @@ function collectStreams(playData) {
   });
 }
 
-async function fetchSubtitles(subjectId, streamId, langLabel) {
+// v1.34.0: MovieBox's own subtitles, wired into the player.
+// Verified live 2026-11-11 (phone, home IP):
+//  - phone play-info has NO subTitleList; subtitles come only from
+//    the two caption endpoints below.
+//  - get-stream-captions?subjectId&streamId=<stream.id> is the
+//    reliable one: Avatar 13 caps, Wednesday S1E1 15 caps.
+//  - get-ext-captions?subjectId&resourceId&episode works for movies
+//    (Avatar 13) but returned 0 for Wednesday S1E1 — kept as fallback.
+//  - URLs are CloudFront-signed .srt, plain-GET fetchable; some
+//    entries are dead (404) and fail soft at download time.
+//  - language is the CODE (c.lan, e.g. "in_id", "en") so the ranker
+//    can match the preferred language; the label is the display
+//    name + MovieBox.
+async function fetchSubtitles(subjectId, streamId, langLabel, episode) {
   var subs = [];
+  var seen = {};
+  function pushCaps(caps) {
+    if (!Array.isArray(caps)) return;
+    caps.forEach(function (c) {
+      if (!c.url || seen[c.url]) return;
+      seen[c.url] = true;
+      var code = c.lan || c.language || "en";
+      var disp = c.lanName || c.language || code;
+      subs.push({ url: c.url, language: code,
+        name: disp + " · MovieBox" });
+    });
+  }
   try {
     var u1 = API_BASE + "/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId="
       + subjectId + "&streamId=" + encodeURIComponent(streamId);
     var r1 = await mbRequest("GET", u1, null);
-    var caps1 = r1.data && r1.data.data && r1.data.data.extCaptions;
-    if (Array.isArray(caps1)) caps1.forEach(function (c) {
-      if (c.url) subs.push({ url: c.url, language: c.language || c.lanName || c.lan || "en",
-        name: (c.lanName || c.language || "Subtitle") + " (" + langLabel + ")",
-        headers: { "Referer": API_BASE } });
-    });
+    pushCaps(r1.data && r1.data.data && r1.data.data.extCaptions);
   } catch (e) { /* ignore */ }
   try {
     var u2 = API_BASE + "/wefeed-mobile-bff/subject-api/get-ext-captions?subjectId="
-      + subjectId + "&resourceId=" + encodeURIComponent(streamId) + "&episode=0";
+      + subjectId + "&resourceId=" + encodeURIComponent(streamId)
+      + "&episode=" + (episode || 0);
     var r2 = await mbRequest("GET", u2, null);
-    var caps2 = r2.data && r2.data.data && r2.data.data.extCaptions;
-    if (Array.isArray(caps2)) caps2.forEach(function (c) {
-      if (c.url) subs.push({ url: c.url, language: c.lan || c.lanName || c.language || "en",
-        name: (c.lanName || c.lan || "Subtitle") + " (" + langLabel + ")",
-        headers: { "Referer": API_BASE } });
-    });
+    pushCaps(r2.data && r2.data.data && r2.data.data.extCaptions);
   } catch (e) { /* ignore */ }
   return subs;
 }
@@ -560,6 +577,43 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
       var playData = playRes.data && playRes.data.data;
       if (!playData) continue;
       var streamsList = collectStreams(playData);
+      // v1.34.1: this dub's captions, fetched ONCE from the first
+      // usable stream's id and attached to EVERY stream from the dub
+      // — app-API, detectors fallback and H5 alike. (v1.34.0 only
+      // attached them to app-API streams, so the H5 1080p rows — the
+      // ones that actually play — had none.)
+      var dubSubs = [];
+      var dubStreamId = null;
+      for (var si = 0; si < streamsList.length; si++) {
+        var sv = streamsList[si];
+        var rv = sv.url || sv.playUrl || sv.resourceLink || sv.streamUrl || "";
+        if (!rv) continue;
+        if (rv.indexOf("b164fbfb4347792950bdfbfb563d39d9") >= 0) continue;
+        if (/\/other\/\d{4}\/\d{2}\/\d{2}\//.test(rv)) continue;
+        if (!sv.id) continue;
+        dubStreamId = String(sv.id);
+        break;
+      }
+      // v1.34.3: the app-API play-info can come back empty (311 bytes,
+      // no streams) for a title — Sunshine Through the Rain S1E1 does
+      // this every time — leaving streamsList empty and dubStreamId
+      // null, so the H5 streams got zero captions. The TV play-info
+      // (same title, same episode) reliably returns a resource, and
+      // captions are per-title, so its resourceId fetches the same
+      // captions. Use it as the fallback id.
+      if (!dubStreamId) {
+        try {
+          var tvParams = "subjectId=" + item.id + "&se=" + season + "&ep=" + episode
+            + "&streamSignType=1&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1";
+          var tvRes = await mbRequest("GET", TV_BASE + "/wefeed-tv-bff/subject/play-info/v2?" + tvParams, null, playbackHeaders);
+          var tvData = tvRes.data && tvRes.data.data;
+          var tvResources = tvData && Array.isArray(tvData.resources) ? tvData.resources : [];
+          for (var ti = 0; ti < tvResources.length; ti++) {
+            if (tvResources[ti].resourceId) { dubStreamId = String(tvResources[ti].resourceId); break; }
+          }
+        } catch (eTv) { /* fall through with no captions */ }
+      }
+      if (dubStreamId) dubSubs = await fetchSubtitles(item.id, dubStreamId, item.lang, episode);
       var hasValid = false;
       for (var j = 0; j < streamsList.length; j++) {
         var stream = streamsList[j];
@@ -579,8 +633,7 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
         var qn = qualityNum(stream.resolutions || stream.resolution || stream.quality);
         var quality = qn ? qn + "p" : "Auto";
         var audio = audioLabel(stream, item.lang);
-        var streamId = stream.id || (item.id + "|" + season + "|" + episode);
-        var subs = await fetchSubtitles(item.id, streamId, item.lang);
+        var subs = dubSubs;
         var hdrs = Object.assign({}, fileHeaders);
         var signCookie = stream.signCookie || null;
         var signKey = stream.signHeaderKey || stream.sign_header_key || "Cookie";
@@ -608,7 +661,7 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
               title: mediaTitle + (season > 0 ? " S" + season + "E" + episode : "")
                 + " - " + dq + " (" + audioLabel({}, item.lang) + ") [Direct]",
               url: det.downloadUrl, quality: dq,
-              headers: Object.assign({}, fileHeaders), provider: "moviebox"
+              headers: Object.assign({}, fileHeaders), subtitles: dubSubs, provider: "moviebox"
             });
           }
           if (!Array.isArray(det.resolutionList)) return;
@@ -622,7 +675,7 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
                 + " - " + (v.resolution ? v.resolution + "p" : "Auto")
                 + " (" + audioLabel({}, item.lang) + ") [Fallback]",
               url: v.resourceLink, quality: v.resolution ? v.resolution + "p" : "Auto",
-              headers: Object.assign({}, fileHeaders), provider: "moviebox"
+              headers: Object.assign({}, fileHeaders), subtitles: dubSubs, provider: "moviebox"
             });
           });
         });
@@ -675,7 +728,7 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
                 name: "MovieBox",
                 title: mediaTitle + (season > 0 ? " S" + season + "E" + episode : "")
                   + " - " + hq + " (" + audioLabel({}, item.lang) + ") [MP4] [H5]",
-                url: u, quality: hq, headers: hdrs, provider: "moviebox"
+                url: u, quality: hq, headers: hdrs, subtitles: dubSubs, provider: "moviebox"
               });
             });
           }
@@ -700,6 +753,15 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
     return (rank[(b.quality || "").toLowerCase()] || 0)
       - (rank[(a.quality || "").toLowerCase()] || 0);
   });
+  // v1.34.2 diag: how many streams carry provider subtitles (and how
+  // many subs each) — the picker still shows "None found" on 1.34.1.
+  try {
+    var _diag = allStreams.map(function (s) {
+      return (s.provider || "?") + ":" + (s.quality || "?") + "="
+        + ((s.subtitles && s.subtitles.length) || 0);
+    }).join(", ");
+    console.log("[MovieBox] return " + allStreams.length + " streams | " + _diag);
+  } catch (eD) { }
   return allStreams;
 }
 

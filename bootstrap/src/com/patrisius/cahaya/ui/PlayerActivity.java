@@ -297,6 +297,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 onlineRaw.add(new SubtitleItem(legacy, prefs.preferredLang, prefs.preferredLang + " · provided"));
         }
         onlineRanked = SubtitleRanker.rank(onlineRaw, prefs.preferredLang);
+        // v1.34.2 diag: did the picked stream carry provider subtitles?
+        android.util.Log.d("CahayaSubs", "intent subs=" + (subUrls == null ? "null" : subUrls.length)
+                + " onlineRaw=" + onlineRaw.size() + " ranked=" + onlineRanked.size());
 
         buildUi();
         initPlayer();

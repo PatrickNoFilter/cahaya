@@ -1184,6 +1184,23 @@ public class MainActivity extends Activity {
                 }
                 i.putExtra("headers", hb.toString());
             }
+            // v1.34.0: provider-attached subtitles (MovieBox's own
+            // captions). PlayerActivity merges them into the subtitle
+            // picker alongside the addon results.
+            if (s.subtitles != null && !s.subtitles.isEmpty()) {
+                String[] su = new String[s.subtitles.size()];
+                String[] sl = new String[s.subtitles.size()];
+                String[] sb = new String[s.subtitles.size()];
+                for (int si = 0; si < s.subtitles.size(); si++) {
+                    com.patrisius.cahaya.addon.SubtitleItem sub = s.subtitles.get(si);
+                    su[si] = sub.url;
+                    sl[si] = sub.lang;
+                    sb[si] = sub.label != null && !sub.label.isEmpty() ? sub.label : sub.lang;
+                }
+                i.putExtra("sub_urls", su);
+                i.putExtra("sub_langs", sl);
+                i.putExtra("sub_labels", sb);
+            }
             // v1.1.0: a finished item restarts from 0, not
             // from its end position (which would end instantly).
             double resumePos = (it.duration > 0 && it.position >= it.duration - 30)

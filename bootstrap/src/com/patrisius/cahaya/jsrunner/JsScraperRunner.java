@@ -399,6 +399,21 @@ public class JsScraperRunner {
                                     item.headers.put(k, h.optString(k));
                                 }
                             }
+                            // v1.34.0: provider-attached subtitles (MovieBox's
+                            // own captions). Each entry: {url, language, name}.
+                            org.json.JSONArray subsArr = s.optJSONArray("subtitles");
+                            if (subsArr != null && subsArr.length() > 0) {
+                                item.subtitles = new java.util.ArrayList<>();
+                                for (int si = 0; si < subsArr.length(); si++) {
+                                    org.json.JSONObject sc = subsArr.optJSONObject(si);
+                                    if (sc == null) continue;
+                                    String su = sc.optString("url", "");
+                                    if (su.isEmpty()) continue;
+                                    item.subtitles.add(new com.patrisius.cahaya.addon.SubtitleItem(
+                                            su, sc.optString("language", "en"),
+                                            sc.optString("name", "")));
+                                }
+                            }
                             out.add(item);
                         }
                     } catch (Exception e) {
@@ -485,6 +500,7 @@ public class JsScraperRunner {
         r.seeders = s.seeders;
         r.size = s.size;
         r.headers = s.headers;
+        r.subtitles = s.subtitles;
         return r;
     }
 
