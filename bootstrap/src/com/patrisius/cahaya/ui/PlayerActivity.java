@@ -108,6 +108,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // v1.36.2: three separate lines so each can size independently.
     private android.widget.LinearLayout nowPlayingCard;
     private TextView nowPlayingTitle;    // unified display title (bold)
+    private TextView nowPlayingLabel;    // "Now Playing - 1:05:00", ticking (v1.37.0)
     private TextView nowPlayingRes;      // video + audio info (smaller)
     private View nowPlayingDot;      // pulsing indicator in the header
     private android.animation.ObjectAnimator nowPlayingDotAnim;
@@ -117,11 +118,28 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private static final int NOW_PLAYING_SHOW_MS = 30000;      // visible 30 s
     private final Runnable nowPlayingHide = new Runnable() {
         @Override public void run() {
+            main.removeCallbacks(nowPlayingTick);
             if (nowPlayingDotAnim != null) nowPlayingDotAnim.cancel();
             if (nowPlayingDot != null) nowPlayingDot.setAlpha(1f);
             if (nowPlayingCard != null) nowPlayingCard.setVisibility(View.GONE);
         }
     };
+    /** v1.37.0: tick the flash header's elapsed time once a second
+     *  while the card is up — "Now Playing - 1:05:00", same clock as
+     *  the player navigation display (TimeFmt.clock). */
+    private final Runnable nowPlayingTick = new Runnable() {
+        @Override public void run() {
+            if (destroyed || nowPlayingCard == null
+                    || nowPlayingCard.getVisibility() != View.VISIBLE) return;
+            updateNowPlayingClock();
+            main.postDelayed(this, 1000);
+        }
+    };
+    private void updateNowPlayingClock() {
+        if (nowPlayingLabel == null) return;
+        double pos = mpvTimePos >= 0 ? mpvTimePos : manualPos;
+        nowPlayingLabel.setText("Now Playing - " + TimeFmt.clock(pos));
+    }
     private final Runnable nowPlayingShow = new Runnable() {
         @Override public void run() {
             if (destroyed || !fileLoaded || nowPlayingCard == null) return;
@@ -136,6 +154,8 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             }
             nowPlayingCard.setVisibility(View.VISIBLE);
             if (nowPlayingDotAnim != null) nowPlayingDotAnim.start();
+            updateNowPlayingClock(); // v1.37.0: header ticks every second
+            main.postDelayed(nowPlayingTick, 1000);
             main.postDelayed(nowPlayingHide, NOW_PLAYING_SHOW_MS);
             main.postDelayed(this, NOW_PLAYING_INTERVAL_MS);
         }
@@ -467,12 +487,12 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 new android.widget.LinearLayout.LayoutParams(dp(8), dp(8));
         dotLp.rightMargin = dp(8);
         npHeader.addView(nowPlayingDot, dotLp);
-        TextView npLabel = new TextView(this);
-        npLabel.setText("Now Playing");
-        npLabel.setTextColor(PlayerTheme.TEXT);
-        npLabel.setTextSize(18);
-        npLabel.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        npHeader.addView(npLabel, new android.widget.LinearLayout.LayoutParams(
+        nowPlayingLabel = new TextView(this);
+        nowPlayingLabel.setText("Now Playing");
+        nowPlayingLabel.setTextColor(PlayerTheme.TEXT);
+        nowPlayingLabel.setTextSize(18);
+        nowPlayingLabel.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        npHeader.addView(nowPlayingLabel, new android.widget.LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         nowPlayingCard.addView(npHeader, new android.widget.LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -981,14 +1001,21 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // Now-playing flash (v1.36.0)
     // =====================================================================
 
-    /** The series name without the " — Episode N" (or " — <episode>")
-     *  suffix the launcher appends — e.g. "Sunshine Through the Rain"
-     *  from "Sunshine Through the Rain — Episode 8". */
+    /** The series name without the episode suffix — e.g. "Sunshine
+     *  Through the Rain" from "Sunshine Through the Rain — Episode 8"
+     *  (old format) or from "S1E8 - Sunshine Through the Rain -
+     *  Beauty Isn't Far Away" (unified format, v1.36.4). */
     private String seriesName() {
         if (title == null) return "";
-        int idx = title.lastIndexOf(" — ");
-        if (idx > 0) return title.substring(0, idx).trim();
-        return title;
+        String t = title;
+        // Unified format: drop the leading "S1E8 - ".
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^S\\d+E\\d+ - ").matcher(t);
+        if (m.find()) t = t.substring(m.end());
+        int idx = t.lastIndexOf(" — ");
+        if (idx < 0) idx = t.lastIndexOf(" - ");
+        if (idx > 0) return t.substring(0, idx).trim();
+        return t;
     }
 
     /** The one title format used everywhere (player navigation,
@@ -1017,6 +1044,18 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         }
         if (tvMode && tvChannels != null && tvIndex >= 0 && tvIndex < tvChannels.size()) {
             return tvChannels.get(tvIndex).name;
+        }
+        // v1.36.4: movie — just the movie title, plus the sequel/part
+        // title when the raw title carries one ("Movie — Sequel" ->
+        // "Movie - Sequel"); an empty or duplicate part is dropped.
+        if ("movie".equals(type) && title != null) {
+            int idx = title.indexOf(" — ");
+            if (idx > 0) {
+                String movie = title.substring(0, idx).trim();
+                String part = title.substring(idx + 3).trim();
+                if (part.isEmpty() || part.equals(movie)) return movie;
+                return movie + " - " + part;
+            }
         }
         return title;
     }
@@ -1144,6 +1183,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                                 main.post(() -> {
                                     if (destroyed) return;
                                     if (titleView != null) titleView.setText(displayTitle());
+                                    // v1.36.4: the flash card snapshots the title
+                                    // when it fires — usually before this meta
+                                    // arrives — so re-fill it when it is visible.
+                                    if (nowPlayingCard != null
+                                            && nowPlayingCard.getVisibility() == View.VISIBLE) {
+                                        fillNowPlayingCard();
+                                    }
                                 });
                                 break;
                             }
@@ -1165,6 +1211,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void stopNowPlayingFlashes() {
         main.removeCallbacks(nowPlayingShow);
         main.removeCallbacks(nowPlayingHide);
+        main.removeCallbacks(nowPlayingTick);
         if (nowPlayingDotAnim != null) nowPlayingDotAnim.cancel();
         if (nowPlayingDot != null) nowPlayingDot.setAlpha(1f);
         if (nowPlayingCard != null) nowPlayingCard.setVisibility(View.GONE);
@@ -1272,7 +1319,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     /** Same stream sources as Details.playVideo, for the next episode. */
     private void collectNextStreams(final MetaDetails meta, final MetaDetails.VideoInfo nv,
                                     final AlertDialog progress) {
-        final String nextTitle = meta.name + " — " + nv.title;
+        // v1.36.4: unified title — "S1E9 - Series - Episode Title".
+        final String nextTitle = (nv.season > 0 && nv.episode > 0
+                ? "S" + nv.season + "E" + nv.episode + " - " : "")
+                + meta.name
+                + (nv.title != null && !nv.title.isEmpty() ? " - " + nv.title : "");
         final String nextVideoId = nv.id;
         final String nextPoster = nv.thumbnail != null && !nv.thumbnail.isEmpty()
                 ? nv.thumbnail : poster;
@@ -1309,7 +1360,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 return;
             }
             // v1.5.1: StreamPicker sorts seeders-desc within each column.
-            showNextPicker(nextTitle, nextVideoId, nextPoster, all);
+            showNextPicker(nextTitle, nextVideoId, nextPoster, all, nv.title);
         };
         AddonManager.Callback<List<StreamItem>> collect =
                 new AddonManager.Callback<List<StreamItem>>() {
@@ -1373,23 +1424,25 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     }
 
     private void showNextPicker(final String nextTitle, final String nextVideoId,
-                                final String nextPoster, final List<StreamItem> streams) {
+                                final String nextPoster, final List<StreamItem> streams,
+                                final String nextEpTitle) {
         // v1.5.1: same grouped column picker as Details Play.
         StreamPicker.show(this, nextTitle, streams, s -> {
             if (s.isTorrent()) {
-                playNextTorrent(nextTitle, nextVideoId, nextPoster, s);
+                playNextTorrent(nextTitle, nextVideoId, nextPoster, s, nextEpTitle);
                 return;
             }
             // v1.34.4: carry the picked stream's provider subtitles
             // (MovieBox's own captions) into the switch — switchToStream
             // clears the old ones, and fetchOnlineSubtitles only brings
             // addon tracks, so without this the next episode has none.
-            switchToStream(s.url, s.headers, nextTitle, nextVideoId, nextPoster, s.subtitles);
+            switchToStream(s.url, s.headers, nextTitle, nextVideoId, nextPoster, s.subtitles, nextEpTitle);
         }, streamUrl, "Playing");
     }
 
     private void playNextTorrent(final String nextTitle, final String nextVideoId,
-                                 final String nextPoster, final StreamItem s) {
+                                 final String nextPoster, final StreamItem s,
+                                 final String nextEpTitle) {
         android.widget.TextView msg = new android.widget.TextView(this);
         msg.setPadding(48, 32, 48, 32);
         msg.setTextSize(18);
@@ -1415,7 +1468,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                     @Override public void onReady(String httpUrl, String fileName) {
                         main.post(() -> {
                             if (dlg.isShowing()) dlg.dismiss();
-                            switchToStream(httpUrl, null, nextTitle, nextVideoId, nextPoster, null);
+                            switchToStream(httpUrl, null, nextTitle, nextVideoId, nextPoster, null, nextEpTitle);
                         });
                     }
 
@@ -1435,11 +1488,22 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     private void switchToStream(String url,
                                 java.util.Map<String, String> headers,
                                 String nTitle, String nVideoId, String nPoster,
-                                java.util.List<com.patrisius.cahaya.addon.SubtitleItem> subs) {
+                                java.util.List<com.patrisius.cahaya.addon.SubtitleItem> subs,
+                                String nEpTitle) {
         saveCurrentProgress();
         title = nTitle;
-        titleView.setText(displayTitle());
         videoId = nVideoId;
+        // v1.36.4: carry the next episode's title (already known from
+        // the meta) into the cache, so the header and the first flash
+        // show the full title at once instead of waiting on a second
+        // meta fetch — same pattern as the v1.34.4 subtitle carry-over.
+        // Set BEFORE displayTitle() reads it, and before the file-load
+        // fetch runs (it skips when the title is already cached).
+        if (nEpTitle != null && !nEpTitle.isEmpty() && nVideoId != null) {
+            episodeTitle = nEpTitle;
+            episodeTitleFor = nVideoId;
+        }
+        titleView.setText(displayTitle());
         poster = nPoster;
         streamUrl = url;
         if (headers != null && !headers.isEmpty()) {

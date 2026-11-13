@@ -951,6 +951,7 @@ public class MainActivity extends Activity {
             applyCardFrame(v, hasFocus, Color.TRANSPARENT);
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
             if (hasFocus) {
+                scrollRowHeaderIntoView(v);
                 updateInfo(it.title);
                 updateHero(new CatalogItem(it.videoId, it.type, it.title, it.poster));
             }
@@ -1781,6 +1782,7 @@ public class MainActivity extends Activity {
             applyCardFrame(v, hasFocus, Color.parseColor("#2A4A5A"));
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
             if (hasFocus) {
+                scrollRowHeaderIntoView(v);
                 updateInfo(item.name);
                 updateHero(item);
             }
@@ -2210,6 +2212,47 @@ public class MainActivity extends Activity {
         heroDesc.setText(d.description != null ? d.description : "");
     }
 
+    /** v1.37.2: one D-pad press shows the whole row — list title +
+     *  cards — at once. Android's default focus scroll only reveals
+     *  the focused card, so when the cursor drops to a new row the
+     *  row's header (list title) stays scrolled off above the viewport
+     *  until a second press. When a card gains focus, scroll the Home
+     *  ScrollView so the card's row header sits at the top of the
+     *  viewport (just under the pinned hero). Posted, so it runs after
+     *  the system's own focus scroll instead of fighting it. */
+    private void scrollRowHeaderIntoView(View card) {
+        if (homeRows == null || card == null) return;
+        // Walk up: card -> strip -> hsv -> row (direct child of homeRows).
+        View row = card;
+        View p = (View) card.getParent();
+        while (p != null && p != homeRows) {
+            row = p;
+            p = (View) p.getParent();
+        }
+        if (p == null) return; // not a Home row card (e.g. Search results)
+        // Find the ScrollView above homeRows.
+        View sv = (View) homeRows.getParent();
+        while (sv != null && !(sv instanceof ScrollView)) {
+            sv = (View) sv.getParent();
+        }
+        if (!(sv instanceof ScrollView)) return;
+        final ScrollView scroll = (ScrollView) sv;
+        // Row top relative to the ScrollView's content.
+        int rowTop = 0;
+        View v = row;
+        while (v != null && v != scroll) {
+            rowTop += v.getTop();
+            v = (View) v.getParent();
+        }
+        if (v == null) return;
+        final int target = rowTop;
+        int scrollY = scroll.getScrollY();
+        int viewportH = scroll.getHeight();
+        if (rowTop < scrollY || rowTop + row.getHeight() > scrollY + viewportH) {
+            scroll.post(() -> scroll.smoothScrollTo(0, target));
+        }
+    }
+
     private View makeRow(String header, List<CatalogItem> items) {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -2552,6 +2595,7 @@ public class MainActivity extends Activity {
             applyCardFrame(v, hasFocus, Color.parseColor("#2A4A5A"));
             name.setTextColor(hasFocus ? Color.WHITE : Color.LTGRAY);
             if (hasFocus) {
+                scrollRowHeaderIntoView(v);
                 updateInfo(item.name);
                 updateHero(item);
             }

@@ -19,7 +19,8 @@ import java.util.List;
 /**
  * Stream source picker (v1.5.1): streams grouped into COLUMNS by
  * source, in fixed order — PlayIMDb, Torrentio, 4khdhub, MovieBox
- * (v1.21.0) — instead of one flat list. Streams from any other source
+ * (v1.21.0; phone + TV backends merged into one column in v1.37.1)
+ * — instead of one flat list. Streams from any other source
  * (e.g. FibWatch) go in a trailing "Other" column, only when present,
  * so nothing playable silently disappears. Shared by Details Play, the
  * player's Next button, and Playing History clicks.
@@ -68,16 +69,26 @@ public class StreamPicker {
         }
     }
 
-    /** Group key: 0 = PlayIMDb, 1 = Torrentio, 2 = 4khdhub, 3 = MovieBox,
-     *  4 = MovieBox TV, 5 = other. */
+    /** Group key: 0 = PlayIMDb, 1 = Torrentio, 2 = 4khdhub,
+     *  3 = MovieBox (phone + TV backends merged, v1.37.1),
+     *  4 = other. */
+    /** v1.37.2: order inside a column — MovieBox (phone backend)
+     *  before MovieBox TV, so the main provider sits at the top of
+     *  the merged MovieBox column. Anything else keeps its place. */
+    private static int providerRank(StreamItem s) {
+        String src = s.source == null ? "" : s.source;
+        if ("moviebox".equals(src)) return 0;
+        if ("movieboxtv".equals(src)) return 1;
+        return 2;
+    }
+
     private static int groupOf(StreamItem s) {
         String src = s.source == null ? "" : s.source;
         if ("playimdb".equals(src)) return 0;
         if (src.contains("torrentio")) return 1;
         if ("4khdhub".equals(src)) return 2;
-        if ("moviebox".equals(src)) return 3;
-        if ("movieboxtv".equals(src)) return 4;
-        return 5;
+        if ("moviebox".equals(src) || "movieboxtv".equals(src)) return 3;
+        return 4;
     }
 
     public static void show(final Activity activity, String title,
@@ -101,14 +112,19 @@ public class StreamPicker {
         Column[] cols = new Column[]{
                 new Column("PlayIMDb"), new Column("Torrentio"),
                 new Column("4khdhub"), new Column("MovieBox"),
-                new Column("MovieBox TV"),
                 new Column("Other"),
         };
         for (StreamItem s : streams) cols[groupOf(s)].items.add(s);
         // Seeders-desc within each column (stable: scrapers keep order).
+        // v1.37.2: inside the merged MovieBox column the phone-backend
+        // streams come first, then MovieBox TV — so the main provider
+        // always sits at the top of its column.
         for (Column c : cols) {
-            Collections.sort(c.items,
-                    (a, b) -> Integer.compare(b.seeders, a.seeders));
+            Collections.sort(c.items, (a, b) -> {
+                int ra = providerRank(a), rb = providerRank(b);
+                if (ra != rb) return Integer.compare(ra, rb);
+                return Integer.compare(b.seeders, a.seeders);
+            });
         }
 
         // v1.5.5: measure each column's content, size the column to

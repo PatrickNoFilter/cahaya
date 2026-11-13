@@ -214,8 +214,17 @@ public class DetailsActivity extends Activity {
 
     private View makeEpisodeRow(final MetaDetails.VideoInfo vi) {
         TextView row = new TextView(this);
-        String label = (vi.season > 0 ? "S" + vi.season + " " : "")
-                + (vi.episode > 0 ? "E" + vi.episode + " — " : "") + vi.title;
+        // v1.36.4: unified title — "S1E8 - Episode Title".
+        StringBuilder lb = new StringBuilder();
+        if (vi.season > 0 && vi.episode > 0) {
+            lb.append("S").append(vi.season).append("E").append(vi.episode).append(" - ");
+        } else if (vi.season > 0) {
+            lb.append("S").append(vi.season).append(" - ");
+        } else if (vi.episode > 0) {
+            lb.append("E").append(vi.episode).append(" - ");
+        }
+        lb.append(vi.title);
+        String label = lb.toString();
         row.setText(label);
         row.setTextSize(16);
         row.setPadding(dp(12), dp(12), dp(12), dp(12));

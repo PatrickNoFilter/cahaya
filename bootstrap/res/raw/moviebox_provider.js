@@ -315,28 +315,38 @@ async function getToken() {
 }
 
 async function mbRequest(method, url, body, extraHeaders, isTokenFetch) {
-  initSession();
-  var ts = Date.now();
-  var accept = "application/json";
-  var contentType = (extraHeaders && extraHeaders["Content-Type"])
-    || (body ? "application/json; charset=utf-8" : "application/json");
-  var headers = {
-    "Accept": accept,
-    "Content-Type": contentType,
-    "x-client-token": xClientToken(ts),
-    "x-tr-signature": xTrSignature(method, accept, contentType, url, body, ts),
-    "User-Agent": "com.community.mbox.in/52120138 (Linux; U; Android 14; en_IN; SM-S918B; Build/UD1A.230803.041; Cronet/145.0.7582.0)",
-    "x-client-info": clientInfo(),
-    "x-client-status": "0"
-  };
-  if (extraHeaders) for (var k in extraHeaders) headers[k] = extraHeaders[k];
-  if (!isTokenFetch) {
-    var tok = await getToken();
-    if (tok) headers["Authorization"] = "Bearer " + tok;
+  // v1.37.3 (anti-block): retry transient failures (429 rate-limit,
+  // 5xx) with backoff (1s, 2s) instead of failing the title outright.
+  // Headers are rebuilt per attempt (fresh timestamp + signature).
+  var res = null, data = null;
+  var delay = 1000;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    initSession();
+    var ts = Date.now();
+    var accept = "application/json";
+    var contentType = (extraHeaders && extraHeaders["Content-Type"])
+      || (body ? "application/json; charset=utf-8" : "application/json");
+    var headers = {
+      "Accept": accept,
+      "Content-Type": contentType,
+      "x-client-token": xClientToken(ts),
+      "x-tr-signature": xTrSignature(method, accept, contentType, url, body, ts),
+      "User-Agent": "com.community.mbox.in/52120138 (Linux; U; Android 14; en_IN; SM-S918B; Build/UD1A.230803.041; Cronet/145.0.7582.0)",
+      "x-client-info": clientInfo(),
+      "x-client-status": "0"
+    };
+    if (extraHeaders) for (var k in extraHeaders) headers[k] = extraHeaders[k];
+    if (!isTokenFetch) {
+      var tok = await getToken();
+      if (tok) headers["Authorization"] = "Bearer " + tok;
+    }
+    res = await fetch(url, { method: method, headers: headers, body: body || undefined });
+    data = null;
+    try { data = await res.json(); } catch (e) { data = null; }
+    if (res.status !== 429 && res.status < 500) break;
+    if (attempt < 2) await new Promise(function (r) { setTimeout(r, delay); });
+    delay *= 2;
   }
-  var res = await fetch(url, { method: method, headers: headers, body: body || undefined });
-  var data = null;
-  try { data = await res.json(); } catch (e) { data = null; }
   return { status: res.status, ok: res.ok, data: data, headers: res.headers };
 }
 
@@ -532,7 +542,15 @@ async function getStreamLinks(subjectId, season, episode, mediaTitle, mediaType)
   // v1.23.3: same as the TV provider — the file CDN 429s requests
   // carrying the moviebox.ph Referer. File requests get Origin + UA
   // only (plus the per-stream sign Cookie when the backend supplies one).
-  var fileHeaders = { "Origin": webBase, "User-Agent": PLAYER_UA };
+  // v1.37.1: the file CDN (bcdn.hakunaymatata.com) 428s ANY Mozilla/5.0
+  // User-Agent (verified live 2026-11-13: Chrome UA -> 428, no UA or
+  // "Cahaya/0.9 (Android TV)" -> 200).
+  // v1.37.3 (anti-block): file requests now carry the OFFICIAL
+  // MovieBox app UA (same one the API calls already use) instead of
+  // the app's own UA — so the CDN sees traffic identical to the real
+  // app and cannot single Cahaya out by User-Agent. Verified live
+  // 2026-11-13: official app UA -> 200 on bcdn.
+  var fileHeaders = { "Origin": webBase, "User-Agent": "com.community.mbox.in/52120138 (Linux; U; Android 14; en_IN; SM-S918B; Build/UD1A.230803.041; Cronet/145.0.7582.0)" };
   var allStreams = [];
   // v1.25.0: H5 detail once per title — returns the per-dub detailPaths
   // (subject.dubs[].detailPath) the H5 play calls need, plus the

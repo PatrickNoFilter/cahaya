@@ -2,7 +2,7 @@
 
 Zero-dependency Android build of Cahaya, produced with the manual
 aapt2 → javac → d8 → zipalign → apksigner pipeline. This is the
-build that ships as the release APKs (current: 1.36.3, build 142) —
+build that ships as the release APKs (current: 1.37.3, build 147) —
 not a prototype: the Gradle/Kotlin project in `../app/` is
 a stub that cannot build in this sandbox (Gradle daemon IPC is
 broken there), so this bootstrap is the canonical build.

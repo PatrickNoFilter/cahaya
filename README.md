@@ -10,8 +10,8 @@ Nuvio and CloudStream — with support for community addons and plugins.
 ## Releases
 
 One codebase, one universal APK per build (arm64-v8a + armeabi-v7a,
-TV + phone UI auto-detected). Current release: **1.36.3** (build
-142) — the same build runs on the phone and on the TV box.
+TV + phone UI auto-detected). Current release: **1.37.3** (build
+147) — the same build runs on the phone and on the TV box.
 
 Install: phone — download the APK and tap it (My Files → Internal
 storage → Download). Box — sideload with
@@ -24,6 +24,25 @@ GitHub Releases — builds are distributed by sideload.
 
 ### Changelog
 
+- **1.37.3** — Anti-block hardening: MovieBox file requests now carry
+  the official MovieBox app User-Agent (phone + TV) instead of the
+  app's own UA, so the file CDN sees traffic identical to the real
+  app; API calls retry 429/5xx with backoff (1 s, 2 s, 3 attempts).
+  (The bcdn file CDN 428s any Mozilla/5.0 UA — found 2026-11-13.)
+- **1.37.2** — One D-pad press shows a whole Home row — list title +
+  cards — at once (the Home ScrollView now scrolls the row's header
+  to the top under the pinned hero); the merged MovieBox picker
+  column orders phone-backend streams above MovieBox TV.
+- **1.37.1** — Movies play again: the bcdn file CDN was rejecting the
+  Chrome Mobile User-Agent (HTTP 428), so MovieBox file requests now
+  carry a non-browser UA; MovieBox + MovieBox TV merged into one
+  picker column. (PlayIMDb's backend returns no `stream_urls` for
+  any title — upstream, its column hides itself until it recovers.)
+- **1.37.0** — Now-playing flash shows the elapsed time ticking per
+  second ("● Now Playing - 1:05:00").
+- **1.36.4** — Now-playing flash re-fills when the episode title
+  arrives; episode rows use the unified "S1E8 - Episode Title"
+  format.
 - **1.36.3** — One title format everywhere (player navigation, pause
   screensaver, now-playing flash): "S1E8 - Series - Episode Title"
   (flash title bold); video codec now contains-matched, so FFmpeg's
