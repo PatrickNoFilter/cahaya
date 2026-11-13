@@ -2,8 +2,8 @@
 
 Zero-dependency Android build of Cahaya, produced with the manual
 aapt2 → javac → d8 → zipalign → apksigner pipeline. This is the
-build that ships as the release APKs (current: phone 1.11.0, TV box
-1.9.0) — not a prototype: the Gradle/Kotlin project in `../app/` is
+build that ships as the release APKs (current: 1.36.3, build 142) —
+not a prototype: the Gradle/Kotlin project in `../app/` is
 a stub that cannot build in this sandbox (Gradle daemon IPC is
 broken there), so this bootstrap is the canonical build.
 
@@ -16,7 +16,10 @@ auto-detected at runtime.
 MediaFusion, OpenSubtitles, …), own trending rows (Korean, Japanese,
 Chinese, Hollywood, Worldwide), libmpv player with self-drawn online
 subtitles, in-app torrent streaming, WebView JS scrapers, QR + phone
-web addon install, Google device-code sign-in.
+web addon install, Google device-code sign-in, MovieBox backends
+(phone / TV / H5) with MovieBox subtitles, Live TV (IPTV playlists +
+YouTube live channels via bundled yt-dlp), Irama music integration,
+now-playing flash.
 
 **Build:** `./build.sh` → `Cahaya-vX.Y.Z.apk` (signed with
 `../keystore/cahaya.jks` — keep that file safe, reuse for updates).
@@ -24,4 +27,4 @@ web addon install, Google device-code sign-in.
 
 **Install:** phone — tap the APK in Download. Box —
 `adb install --no-incremental -r Cahaya-vX.Y.Z.apk` (plain
-incremental install reports Success without installing a ~93 MB APK).
+incremental install reports Success without installing a ~111 MB APK).

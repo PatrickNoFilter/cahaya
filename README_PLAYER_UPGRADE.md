@@ -1,7 +1,7 @@
-> **Status note (2026-10-29):** historical v0.9 design doc. The player
-> it describes has long since shipped and evolved — current releases
-> are phone 1.11.0 and TV box 1.9.0 (see `README.md` changelog). Kept
-> for the design rationale, not as a build guide.
+> **Status note (2026-11-13):** historical v0.9 design doc. The player
+> it describes has long since shipped and evolved — current release is
+> 1.36.3 (build 142, see `README.md` changelog). Kept for the design
+> rationale, not as a build guide.
 
 # Cahaya v0.9: modern player, navigation, icons and subtitles
 

@@ -10,31 +10,72 @@ Nuvio and CloudStream — with support for community addons and plugins.
 ## Releases
 
 One codebase, one universal APK per build (arm64-v8a + armeabi-v7a,
-TV + phone UI auto-detected). Two release tracks mark the build each
-device currently runs:
-
-- **Phone: 1.11.0** (build 88) — latest. Portrait phone UI, side
-  drawer, auto-rotating worldwide banner with a 2–10 s setting,
-  Display settings (banner interval, blur/solid background).
-- **TV box: 1.9.0** (build 86) — the build currently on the box.
-  Streaming-combined Trending Worldwide row (Netflix, Prime, Viu,
-  Disney+).
-
-Release APKs are published on the
-[Releases page](https://github.com/PatrickNoFilter/cahaya/releases) —
-the phone release carries the 1.11.0 APK, the box release the 1.9.0
-APK. The 1.11.0 APK also runs on the box (same universal APK); the
-box release exists to preserve the box's current build.
+TV + phone UI auto-detected). Current release: **1.36.3** (build
+142) — the same build runs on the phone and on the TV box.
 
 Install: phone — download the APK and tap it (My Files → Internal
 storage → Download). Box — sideload with
 `adb install --no-incremental -r Cahaya-vX.Y.Z.apk` (plain
-incremental install reports Success without installing a ~93 MB
-APK). The APK is ~93 MB because it bundles the libmpv player and
-the in-app torrent engine. No Play Store release yet.
+incremental install reports Success without installing a ~111 MB
+APK). The APK is ~111 MB because it bundles the libmpv player, the
+in-app torrent engine and a bundled Python + yt-dlp for YouTube
+live channels. No Play Store release yet, and no APK is attached to
+GitHub Releases — builds are distributed by sideload.
 
 ### Changelog
 
+- **1.36.3** — One title format everywhere (player navigation, pause
+  screensaver, now-playing flash): "S1E8 - Series - Episode Title"
+  (flash title bold); video codec now contains-matched, so FFmpeg's
+  long track name ("H.264 / AVC / MPEG-4 AVC / MPEG-4 PART 10")
+  collapses to "H.264".
+- **1.36.0–1.36.2** — Now-playing flash: small top-left card while
+  watching, 30 s every 5 min — title, episode ("S1 E8 · Episode
+  Title"), live video resolution + format and audio codec/channels/
+  sample-rate; pulsing accent dot + bold "Now Playing" header.
+- **1.35.1** — Dead-server memory (7-day TTL; a dead server is skipped
+  when a live alternative exists); `|Referer=` URL suffixes in
+  playlists are now parsed into the server's headers instead of being
+  passed to mpv as a malformed URL.
+- **1.35.0** — Live TV: the working server is remembered per channel
+  (persisted by URL); loading animation (spinner + "Channel ·
+  server x/y"); riotryulianto playlists added — ~204 unique channels.
+- **1.34.4** — Next-episode subtitle carry-over: the in-player Next
+  switch now passes the picked stream's subtitles (episode 3 lost
+  its subs on the switch).
+- **1.34.0–1.34.3** — MovieBox's own subtitles in the player:
+  captions fetched per stream (phone + TV backends), attached to
+  every stream, merged into the picker; confirmed working on
+  Sunshine Through the Rain.
+- **1.33.0–1.33.1** — Live TV round-robin across servers (8 s
+  watchdog, YouTube fallback via bundled yt-dlp); YouTube audio fix
+  (audio attaches via `audio-add`, not the comma-split `audio-files`
+  option).
+- **1.32.0–1.32.1** — Live TV tab (iptv-org Indonesia playlist + 7
+  YouTube live channels); `ytdl=no` (mpv's ytdl_hook has no yt-dlp)
+  + TvLog diagnostics.
+- **1.31.0–1.31.1** — Irama (Lyra Music TV port) integration: Music
+  tile + now-playing card bring Irama forward; a video auto-pauses
+  it; Addons/Plugins moved into Settings, sidebar logo restored.
+- **1.30.x** — Now-playing card, Music tile, `<queries>` fix for
+  Irama.
+- **1.29.0** — PosterUtil OOM fix (a 388 MB bitmap allocation crashed
+  the app); MovieBox Trending merged as the first home row.
+- **1.26.4** — MovieBox detail fallback (series Cinemeta lacks, e.g.
+  Alas Roban with 24 episodes).
+- **1.25.0** — MovieBox H5 backend (movie-box.co).
+- **1.24.0** — WuPlay ideas (including the player navigation status
+  line: resolution, codec, audio, bitrate).
+- **1.23.3** — bcdnt CDN Referer fix (streams 429'd when a Referer
+  header was sent).
+- **1.22.0** — MovieBox TV backend (tv.aoneroom.com).
+- **1.21.x** — MovieBox phone backend (api3.aoneroom.com, signed API).
+- **1.20.0** — Refresh (home refresh).
+- **1.12.0–1.19.1** — IMDb rows, auto-translate, pause screensaver
+  (1.17.0: 10 s of pause → info screensaver), HDR10+ guard +
+  software-decode fallback (1.18.0; root cause was a SIGSEGV in
+  system libstagefright on HDR10+ HEVC), bitmap subtitles via native
+  FFmpeg bridge (1.19.0), HDR10+ SEI probe (1.19.1).
 - **1.11.0** — Settings → Display: banner auto-change 2–10 s;
   background Blur picture / Solid (black, blue, yellow, green, red);
   Settings Version row now reads from the package (it was a hardcoded
@@ -224,6 +265,11 @@ here; everything above is the shipping code.)
       SDK with a sample plugin is still open)
 - [x] Phase 4 — phone UI in the same APK (since 1.7.0: phone vs TV
       auto-detected, portrait layout, drawer, rotating banner)
+- [x] Phase 5 — MovieBox backends (phone 1.21, TV 1.22, H5 1.25) with
+      MovieBox's own subtitles (1.34); Live TV (1.32–1.35: IPTV
+      playlists + YouTube live channels, round-robin, remembered and
+      dead-server memory); Irama music integration (1.31); now-playing
+      flash + unified display title (1.36)
 
 Proposed, only on his word:
 
