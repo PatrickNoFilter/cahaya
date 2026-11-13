@@ -18,7 +18,7 @@ JDK=/home/hatch/workspace/jdk/jdk-17.0.20.1+1/bin
 export PATH="$JDK:$PATH"   # javac, keytool, and java (needed by d8)
 KS=/home/hatch/workspace/cahaya/keystore/cahaya.jks
 KSPASS="cahaya01"
-APK="$ROOT/Cahaya-v1.34.3.apk"
+APK="$ROOT/Cahaya-v1.36.3.apk"
 LTJAR="$ROOT/libs/lt4j.jar"
 LTSO64="$ROOT/jniLibs/arm64-v8a/libtorrent4j.so"
 LTSO32="$ROOT/jniLibs/armeabi-v7a/libtorrent4j.so"
@@ -38,7 +38,7 @@ echo "== aapt2 link =="
 $BT/aapt2 link -o "$B/base.apk" -I "$AJAR" \
     --manifest "$ROOT/AndroidManifest.xml" \
     --min-sdk-version 26 --target-sdk-version 34 \
-    --version-code 135 --version-name "1.34.3" \
+    --version-code 142 --version-name "1.36.3" \
     --java "$B/gen" \
     "$B/flats.zip"
 

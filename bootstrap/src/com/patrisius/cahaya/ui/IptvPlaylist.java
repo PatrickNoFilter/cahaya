@@ -1,15 +1,18 @@
 package com.patrisius.cahaya.ui;
 
 /**
- * v1.33.0: Live TV playlist. Source = the iptv-org Indonesia list
- * (https://iptv-org.github.io/iptv/countries/id.m3u, 173 channels at
- * last count) merged with the user's 7 curated YouTube live channels.
+ * v1.35.0: Live TV playlists. Sources = iptv-org Indonesia
+ * (https://iptv-org.github.io/iptv/countries/id.m3u) + the curated
+ * riotryulianto Indonesian list (playlist.m3u + backup-streams.m3u,
+ * raw.githubusercontent.com), merged with the user's 7 curated
+ * YouTube live channels.
  *
  * One channel = one list row. Entries that name the same channel
- * (CNN Indonesia as a direct stream AND as a YouTube live stream)
- * merge into one channel with two servers, tried round-robin until
- * one plays — no channel ever appears twice in the list. List order
- * is News first, then National, then Local.
+ * (CNN Indonesia as a direct stream AND as a YouTube live stream,
+ * or "ANTV" and "ANTV 1" from two lists) merge into one channel
+ * with two servers, tried round-robin until one plays — no channel
+ * ever appears twice in the list. List order is News first, then
+ * National, then Local.
  *
  * YouTube servers are resolved at play time by YtDlpResolver, which
  * runs the bundled yt-dlp (ytdlnis approach: native CPython +
@@ -20,8 +23,21 @@ package com.patrisius.cahaya.ui;
  */
 public class IptvPlaylist {
 
+    /** v1.35.0: three Indonesian sources, fetched and merged.
+     *  iptv-org is the base; riotryulianto is a curated, tested
+     *  Indonesian list (official streams: Trans TV, TVRI, RodjaTV,
+     *  RRI NET, NusantaraTV, DENS.TV) that carries the big national
+     *  networks iptv-org lacks (RCTI, Indosiar, GTV, MNCTV, NET,
+     *  Trans TV, Trans7) plus alternate servers for shared channels.
+     *  Its backup list adds a few more. Same channel from two
+     *  sources = one row with two servers (merged by name). */
     public static final String PLAYLIST_URL =
             "https://iptv-org.github.io/iptv/countries/id.m3u";
+    public static final String[] PLAYLIST_URLS = {
+            "https://iptv-org.github.io/iptv/countries/id.m3u",
+            "https://raw.githubusercontent.com/riotryulianto/iptv-playlists/main/playlist.m3u",
+            "https://raw.githubusercontent.com/riotryulianto/iptv-playlists/main/backup-streams.m3u",
+    };
     private static final String CACHE_NAME = "tv_channels.json";
     private static final String UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -73,22 +89,27 @@ public class IptvPlaylist {
         }
     }
 
-    /** Fetch + parse the playlist on a worker thread, merge + dedupe +
-     *  sort it, cache the result, and deliver it on the main thread.
-     *  Falls back to the cache when the network fails. */
+    /** Fetch + parse the playlists on a worker thread, merge + dedupe +
+     *  sort them, cache the result, and deliver it on the main thread.
+     *  Each source is fetched independently — one failing does not
+     *  lose the others. Falls back to the cache when all fail. */
     public static void load(android.content.Context ctx, LoadCallback cb) {
         final android.os.Handler main =
                 new android.os.Handler(android.os.Looper.getMainLooper());
         new Thread(() -> {
-            java.util.List<TvChannel> list = null;
-            try {
-                String m3u = httpGet(PLAYLIST_URL, 15000);
-                list = parseM3u(m3u);
-                TvLog.log("iptv fetched bytes=" + m3u.length()
-                        + " parsed=" + list.size());
-            } catch (Throwable t) {
-                TvLog.log("iptv fetch FAILED: " + t);
+            java.util.List<TvChannel> all = new java.util.ArrayList<>();
+            for (String url : PLAYLIST_URLS) {
+                try {
+                    String m3u = httpGet(url, 15000);
+                    java.util.List<TvChannel> parsed = parseM3u(m3u);
+                    TvLog.log("iptv fetched " + url + " bytes=" + m3u.length()
+                            + " parsed=" + parsed.size());
+                    all.addAll(parsed);
+                } catch (Throwable t) {
+                    TvLog.log("iptv fetch FAILED " + url + ": " + t);
+                }
             }
+            java.util.List<TvChannel> list = all.isEmpty() ? null : all;
             if (list != null && !list.isEmpty()) {
                 list = mergeAndSort(list);
                 TvLog.log("iptv merged unique=" + list.size());
@@ -161,8 +182,10 @@ public class IptvPlaylist {
     }
 
     /** Normalize a channel name for dedupe: strip the "(YouTube)"
-     *  tag, the resolution suffix, the [Not 24/7]/[Geo-blocked] tags
-     *  and the "(Indonesia)" disambiguator; lowercase. */
+     *  tag, the resolution suffix, the [Not 24/7]/[Geo-blocked] tags,
+     *  the "(Indonesia)" disambiguator, and a trailing variant number
+     *  ("ANTV 1" / "Kompas TV 2" are the same channel as "ANTV" /
+     *  "Kompas TV" with another server); lowercase. */
     private static String normalize(String name) {
         if (name == null) return "";
         String n = name.trim();
@@ -170,13 +193,17 @@ public class IptvPlaylist {
         n = n.replaceAll("(?i)\\s*\\((1080p|720p|480p|360p|2160p)\\)\\s*$", "");
         n = n.replaceAll("(?i)\\s*\\[(Not 24/7|Geo-blocked)\\]\\s*$", "");
         n = n.replaceAll("(?i)\\s*\\(Indonesia\\)\\s*$", "");
+        n = n.replaceAll("(?i)\\s+\\d+\\s*$", "");
         return n.trim().toLowerCase(java.util.Locale.US);
     }
 
     /** Parse an M3U: an #EXTINF line (attributes + name after the last
-     *  comma) followed by the stream URL on the next non-# line
-     *  (#EXTVLCOPT lines in between are skipped). Each entry becomes
-     *  a one-server channel; merging happens in mergeAndSort. */
+     *  comma) followed by the stream URL on the next non-# line.
+     *  #EXTVLCOPT lines in between are read for http-user-agent /
+     *  http-referrer (the riotryulianto list carries its UA there,
+     *  not in the #EXTINF attributes); other # lines are skipped.
+     *  Each entry becomes a one-server channel; merging happens in
+     *  mergeAndSort. */
     private static java.util.List<TvChannel> parseM3u(String text) {
         java.util.List<TvChannel> out = new java.util.ArrayList<>();
         if (text == null) return out;
@@ -195,15 +222,44 @@ public class IptvPlaylist {
                 pRef = attr(line, "http-referrer");
                 int c = line.lastIndexOf(',');
                 pending.name = c >= 0 ? line.substring(c + 1).trim() : line;
+            } else if (line.startsWith("#EXTVLCOPT:")) {
+                // v1.35.0: riotryulianto puts the UA/referrer here.
+                String opt = line.substring("#EXTVLCOPT:".length());
+                if (opt.toLowerCase(java.util.Locale.US).startsWith("http-user-agent=")) {
+                    pUa = opt.substring("http-user-agent=".length()).trim();
+                } else if (opt.toLowerCase(java.util.Locale.US).startsWith("http-referrer=")) {
+                    pRef = opt.substring("http-referrer=".length()).trim();
+                }
             } else if (line.startsWith("#")) {
-                continue; // #EXTM3U, #EXTVLCOPT, comments
+                continue; // #EXTM3U, comments
             } else if (pending != null) {
                 pUrl = line;
                 if (pending.name != null && !pending.name.isEmpty()
                         && pUrl != null && !pUrl.isEmpty()) {
-                    pending.addServer(new TvChannel.Server(
-                            pUrl, "Direct", nz(pUa), nz(pRef), ""));
-                    out.add(pending);
+                    // v1.35.1: some lists append Kodi-style header
+                    // suffixes ("...mpd|Referer=https://..."). The "|"
+                    // part is NOT part of the URL — split it off and
+                    // use it as the server's headers, or mpv gets a
+                    // malformed URL and the channel can never play.
+                    String cleanUrl = pUrl;
+                    String sRef = nz(pRef), sUa = nz(pUa);
+                    int pipe = pUrl.indexOf('|');
+                    if (pipe >= 0) {
+                        cleanUrl = pUrl.substring(0, pipe).trim();
+                        for (String kv : pUrl.substring(pipe + 1).split("\\|")) {
+                            int eq = kv.indexOf('=');
+                            if (eq <= 0) continue;
+                            String k = kv.substring(0, eq).trim();
+                            String v = kv.substring(eq + 1).trim();
+                            if (k.equalsIgnoreCase("Referer")) sRef = v;
+                            else if (k.equalsIgnoreCase("User-Agent")) sUa = v;
+                        }
+                    }
+                    if (!cleanUrl.isEmpty()) {
+                        pending.addServer(new TvChannel.Server(
+                                cleanUrl, "Direct", sUa, sRef, ""));
+                        out.add(pending);
+                    }
                 }
                 pending = null;
             }

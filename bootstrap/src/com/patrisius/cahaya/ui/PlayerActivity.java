@@ -101,6 +101,45 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     // ---- views
     private SurfaceView surfaceView;
     private ProgressBar spinner;
+    private TextView tvLoadingLabel; // v1.35.0: TV loading text under the spinner
+    // v1.36.0: Now-playing flash — a brief info card (title, episode,
+    // video/audio resolution) that pops up every 5 min for 30 s.
+    // v1.36.1: the card has a header row — a pulsing dot + "Now Playing".
+    // v1.36.2: three separate lines so each can size independently.
+    private android.widget.LinearLayout nowPlayingCard;
+    private TextView nowPlayingTitle;    // unified display title (bold)
+    private TextView nowPlayingRes;      // video + audio info (smaller)
+    private View nowPlayingDot;      // pulsing indicator in the header
+    private android.animation.ObjectAnimator nowPlayingDotAnim;
+    private String episodeTitle;       // cached episode subtitle (series)
+    private String episodeTitleFor;    // videoId the cached title belongs to
+    private static final int NOW_PLAYING_INTERVAL_MS = 300000; // every 5 min
+    private static final int NOW_PLAYING_SHOW_MS = 30000;      // visible 30 s
+    private final Runnable nowPlayingHide = new Runnable() {
+        @Override public void run() {
+            if (nowPlayingDotAnim != null) nowPlayingDotAnim.cancel();
+            if (nowPlayingDot != null) nowPlayingDot.setAlpha(1f);
+            if (nowPlayingCard != null) nowPlayingCard.setVisibility(View.GONE);
+        }
+    };
+    private final Runnable nowPlayingShow = new Runnable() {
+        @Override public void run() {
+            if (destroyed || !fileLoaded || nowPlayingCard == null) return;
+            // Don't flash over the TV loading overlay mid-zap.
+            if (tvMode && tvLoading) {
+                main.postDelayed(this, NOW_PLAYING_INTERVAL_MS);
+                return;
+            }
+            if (!fillNowPlayingCard()) {
+                main.postDelayed(this, NOW_PLAYING_INTERVAL_MS);
+                return;
+            }
+            nowPlayingCard.setVisibility(View.VISIBLE);
+            if (nowPlayingDotAnim != null) nowPlayingDotAnim.start();
+            main.postDelayed(nowPlayingHide, NOW_PLAYING_SHOW_MS);
+            main.postDelayed(this, NOW_PLAYING_INTERVAL_MS);
+        }
+    };
     private TextView hintView;
     private FrameLayout controller;
     private PlayerButton backBtn, playBtn, nextBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn;
@@ -174,7 +213,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             // v1.17.0: 10 s of uninterrupted pause -> info screensaver,
             // unless the user opened a menu meanwhile.
             if (paused && screensaver != null && !panel.isOpen())
-                screensaver.show(title, type, videoId, poster, mpvTimePos, mpvDuration);
+                screensaver.show(displayTitle(), type, videoId, poster, mpvTimePos, mpvDuration);
         }
     };
     /** Parsed cues per online subtitle URL, so switching back is instant. */
@@ -327,6 +366,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        stopNowPlayingFlashes(); // v1.36.0: stop the flash cycle
         // v1.31.0: exiting the player resumes Irama, but only if
         // Cahaya paused it for this video. isFinishing() keeps a
         // config-change recreate from resuming mid-video.
@@ -386,7 +426,79 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
         spinner = new ProgressBar(this);
         spinner.setIndeterminateTintList(ColorStateList.valueOf(PlayerTheme.ACCENT));
+        spinner.setVisibility(View.GONE);
         root.addView(spinner, new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER));
+
+        // v1.35.0: TV loading label under the spinner — channel name +
+        // which server is being tried ("Metro TV · server 2/3 · YouTube").
+        tvLoadingLabel = new TextView(this);
+        tvLoadingLabel.setTextColor(PlayerTheme.TEXT);
+        tvLoadingLabel.setTextSize(16);
+        tvLoadingLabel.setGravity(Gravity.CENTER);
+        tvLoadingLabel.setShadowLayer(6, 0, 2, 0x99000000);
+        tvLoadingLabel.setVisibility(View.GONE);
+        FrameLayout.LayoutParams tllp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        tllp.topMargin = dp(48);
+        root.addView(tvLoadingLabel, tllp);
+
+        // v1.36.0: now-playing flash card (top-left) — title, episode,
+        // video/audio resolution. Shown for 30 s every 5 min while
+        // watching a movie, series or TV channel.
+        // v1.36.1: the card has a header row — a pulsing dot + "Now Playing".
+        // v1.36.2: three lines, each sized on its own — "Now Playing"
+        // bigger, the video/audio info smaller, the dot smaller.
+        nowPlayingCard = new android.widget.LinearLayout(this);
+        nowPlayingCard.setOrientation(android.widget.LinearLayout.VERTICAL);
+        nowPlayingCard.setBackgroundColor(0xCC000000);
+        nowPlayingCard.setPadding(dp(12), dp(8), dp(12), dp(8));
+        nowPlayingCard.setVisibility(View.GONE);
+        android.widget.LinearLayout npHeader = new android.widget.LinearLayout(this);
+        npHeader.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        npHeader.setGravity(Gravity.CENTER_VERTICAL);
+        nowPlayingDot = new View(this);
+        android.graphics.drawable.GradientDrawable dotBg =
+                new android.graphics.drawable.GradientDrawable();
+        dotBg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        dotBg.setColor(PlayerTheme.ACCENT);
+        nowPlayingDot.setBackground(dotBg);
+        android.widget.LinearLayout.LayoutParams dotLp =
+                new android.widget.LinearLayout.LayoutParams(dp(8), dp(8));
+        dotLp.rightMargin = dp(8);
+        npHeader.addView(nowPlayingDot, dotLp);
+        TextView npLabel = new TextView(this);
+        npLabel.setText("Now Playing");
+        npLabel.setTextColor(PlayerTheme.TEXT);
+        npLabel.setTextSize(18);
+        npLabel.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        npHeader.addView(npLabel, new android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        nowPlayingCard.addView(npHeader, new android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        nowPlayingTitle = new TextView(this);
+        nowPlayingTitle.setTextColor(PlayerTheme.TEXT);
+        nowPlayingTitle.setTextSize(15);
+        nowPlayingTitle.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        nowPlayingCard.addView(nowPlayingTitle, new android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        nowPlayingRes = new TextView(this);
+        nowPlayingRes.setTextColor(PlayerTheme.TEXT);
+        nowPlayingRes.setTextSize(13);
+        nowPlayingCard.addView(nowPlayingRes, new android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // v1.36.1: the dot pulses (fades in/out) while the card is up.
+        nowPlayingDotAnim = android.animation.ObjectAnimator.ofFloat(
+                nowPlayingDot, "alpha", 0.25f, 1.0f);
+        nowPlayingDotAnim.setDuration(700);
+        nowPlayingDotAnim.setRepeatMode(android.animation.ValueAnimator.REVERSE);
+        nowPlayingDotAnim.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        FrameLayout.LayoutParams npp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+        npp.topMargin = dp(16);
+        npp.leftMargin = dp(16);
+        root.addView(nowPlayingCard, npp);
 
         // ---- controller overlay
         controller = new FrameLayout(this);
@@ -415,7 +527,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         LinearLayout titleCol = new LinearLayout(this);
         titleCol.setOrientation(LinearLayout.VERTICAL);
         titleView = new TextView(this);
-        titleView.setText(title);
+        titleView.setText(displayTitle());
         titleView.setTextColor(PlayerTheme.TEXT);
         titleView.setTextSize(22);
         titleView.setTypeface(Typeface.DEFAULT_BOLD);
@@ -765,8 +877,18 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             tvLoadOkMs = System.currentTimeMillis();
             tvTryCount = 0; // a working server resets the round-robin
             if (tvChannels != null && tvIndex >= 0 && tvIndex < tvChannels.size()) {
-                tvChannels.get(tvIndex).lastGoodServer = tvTryIndex;
+                TvChannel ch = tvChannels.get(tvIndex);
+                ch.lastGoodServer = tvTryIndex;
+                // v1.35.0: persist the working server (by URL) so the
+                // next zap starts here even after a playlist refresh.
+                TvChannel.Server cur = ch.serverAt(tvTryIndex);
+                if (cur != null && cur.url != null) {
+                    TvChannelStore.saveLastGoodServer(this, ch.name, cur.url);
+                    // v1.35.1: it plays, so it is not dead any more.
+                    TvChannelStore.unmarkDead(this, cur.url);
+                }
             }
+            setTvLoading(false, null); // v1.35.0: hide the loading overlay
             // v1.33.1: attach the YouTube audio HLS now that the
             // video is in (audio-add takes the URL as one argument,
             // so the commas in it are safe).
@@ -799,6 +921,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         showController();
         autoSelectSubtitle();
         updateStatusLine();
+        // v1.36.0: now-playing flash — show the card now, then every
+        // 2 min for 10 s (movies, series and TV). For a series the
+        // episode subtitle is fetched once from the meta.
+        if (!tvMode && "series".equals(type)) fetchEpisodeTitle();
+        startNowPlayingFlashes();
         // v1.24.0: remember this stream for the picker's "Last played" tag.
         if (videoId != null && streamUrl != null) saveLastPlayed(this, videoId, streamUrl);
     }
@@ -820,7 +947,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 try { h = Integer.parseInt(MPVLib.getPropertyString("video-out-params/h")); } catch (Throwable ignored) {}
             }
             if (w > 0 && h > 0) sb.append(w).append("\u00d7").append(h);
-            String vc = propStr("video-params/codec");
+            // v1.36.2: video format via videoCodecName() — the plain
+            // video-params/codec read is empty on some HLS streams.
+            String vc = videoCodecName();
             if (!vc.isEmpty()) { if (sb.length() > 0) sb.append("  "); sb.append(vc); }
             String ac = propStr("audio-codec-name");
             if (!ac.isEmpty()) { if (sb.length() > 0) sb.append("  \u2022  "); sb.append(ac.toUpperCase(java.util.Locale.US)); }
@@ -846,6 +975,199 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         } catch (Throwable t) {
             return "";
         }
+    }
+
+    // =====================================================================
+    // Now-playing flash (v1.36.0)
+    // =====================================================================
+
+    /** The series name without the " — Episode N" (or " — <episode>")
+     *  suffix the launcher appends — e.g. "Sunshine Through the Rain"
+     *  from "Sunshine Through the Rain — Episode 8". */
+    private String seriesName() {
+        if (title == null) return "";
+        int idx = title.lastIndexOf(" — ");
+        if (idx > 0) return title.substring(0, idx).trim();
+        return title;
+    }
+
+    /** The one title format used everywhere (player navigation,
+     *  pause screensaver, now-playing flash): for a series
+     *  "S1E8 - Sunshine Through the Rain - Beauty Isn't Far Away";
+     *  for a movie or TV channel just the plain title. The episode
+     *  title is appended once the meta fetch has it; before that the
+     *  title is "S1E8 - Series Name". */
+    private String displayTitle() {
+        if (!tvMode && "series".equals(type) && videoId != null) {
+            String[] parts = videoId.split(":");
+            if (parts.length >= 3) {
+                try {
+                    int s = Integer.parseInt(parts[parts.length - 2]);
+                    int e = Integer.parseInt(parts[parts.length - 1]);
+                    StringBuilder b = new StringBuilder();
+                    b.append("S").append(s).append("E").append(e);
+                    b.append(" - ").append(seriesName());
+                    if (episodeTitle != null && !episodeTitle.isEmpty()
+                            && videoId.equals(episodeTitleFor)) {
+                        b.append(" - ").append(episodeTitle);
+                    }
+                    return b.toString();
+                } catch (Throwable ignored) {}
+            }
+        }
+        if (tvMode && tvChannels != null && tvIndex >= 0 && tvIndex < tvChannels.size()) {
+            return tvChannels.get(tvIndex).name;
+        }
+        return title;
+    }
+
+    /** Fill the flash card's lines (title, video+audio) and return
+     *  false when there is nothing to show yet. The title line is
+     *  the unified display title (bold). */
+    private boolean fillNowPlayingCard() {
+        String name = displayTitle();
+        if (name == null || name.isEmpty()) return false;
+        nowPlayingTitle.setText(name);
+        nowPlayingRes.setText(buildNowPlayingResLine());
+        return true;
+    }
+
+    /** "1920×1080 · H.264 · AAC 5.1 · 48 kHz" — video resolution +
+     *  video format (codec) + audio codec/channels/sample-rate. */
+    private String buildNowPlayingResLine() {
+        StringBuilder res = new StringBuilder();
+        int w = 0, h = 0;
+        try { w = Integer.parseInt(MPVLib.getPropertyString("video-params/w")); } catch (Throwable ignored) {}
+        try { h = Integer.parseInt(MPVLib.getPropertyString("video-params/h")); } catch (Throwable ignored) {}
+        if (w <= 0 || h <= 0) {
+            try { w = Integer.parseInt(MPVLib.getPropertyString("video-out-params/w")); } catch (Throwable ignored) {}
+            try { h = Integer.parseInt(MPVLib.getPropertyString("video-out-params/h")); } catch (Throwable ignored) {}
+        }
+        if (w > 0 && h > 0) res.append(w).append("\u00d7").append(h);
+        String vc = videoCodecName();
+        if (!vc.isEmpty()) {
+            if (res.length() > 0) res.append(" · ");
+            res.append(vc);
+        }
+        String ac = propStr("audio-codec-name");
+        String ach = propStr("audio-params/channels");
+        String asr = propStr("audio-params/samplerate");
+        StringBuilder au = new StringBuilder();
+        if (!ac.isEmpty()) au.append(ac.toUpperCase(java.util.Locale.US));
+        if (!ach.isEmpty()) { if (au.length() > 0) au.append(" "); au.append(ach); }
+        if (!asr.isEmpty()) {
+            try {
+                int sr = Integer.parseInt(asr);
+                if (sr > 0) {
+                    if (au.length() > 0) au.append(" · ");
+                    au.append(sr / 1000).append(" kHz");
+                }
+            } catch (Throwable ignored) {}
+        }
+        if (au.length() > 0) {
+            if (res.length() > 0) res.append("  ·  ");
+            res.append(au);
+        }
+        return res.toString();
+    }
+
+    /** The video format (codec), pretty-printed: "H.264", "HEVC",
+     *  "VP9". video-params/codec is empty on some HLS streams, so
+     *  fall back to the video-codec property and then to the video
+     *  track's codec. FFmpeg's track codec is a long descriptor
+     *  ("H.264 / AVC / MPEG-4 AVC / MPEG-4 PART 10"), so match on
+     *  contains, not equality — otherwise the whole descriptor
+     *  leaks into the UI. */
+    private String videoCodecName() {
+        String c = propStr("video-params/codec");
+        if (c.isEmpty()) c = propStr("video-codec");
+        if (c.isEmpty()) {
+            try {
+                for (MpvTrack t : MpvTrack.read("video")) {
+                    if (t.codec != null && !t.codec.isEmpty()) { c = t.codec; break; }
+                }
+            } catch (Throwable ignored) {}
+        }
+        if (c.isEmpty()) return "";
+        String l = c.toLowerCase(java.util.Locale.ROOT);
+        if (l.contains("h264") || l.contains("h.264") || l.contains("avc")) return "H.264";
+        if (l.contains("hevc") || l.contains("h265") || l.contains("h.265")) return "HEVC";
+        if (l.contains("vp9")) return "VP9";
+        if (l.contains("vp8")) return "VP8";
+        if (l.contains("av1")) return "AV1";
+        if (l.contains("mpeg-4") || l.contains("mpeg4")) return "MPEG-4";
+        if (l.contains("mpeg-2") || l.contains("mpeg2")) return "MPEG-2";
+        if (l.contains("wmv")) return "WMV";
+        if (l.contains("xvid")) return "Xvid";
+        if (l.contains("theora")) return "Theora";
+        // Unknown: keep only the first " / "-separated token, so a
+        // long descriptor never leaks into the UI.
+        int slash = c.indexOf(" / ");
+        String first = slash > 0 ? c.substring(0, slash) : c;
+        return first.trim().toUpperCase(java.util.Locale.US);
+    }
+
+    /** Fetch the current episode's subtitle (title) once from the
+     *  series meta and cache it for the flash. A failure just leaves
+     *  the flash showing "S1 E3" without a subtitle. */
+    private void fetchEpisodeTitle() {
+        if (!"series".equals(type) || videoId == null) return;
+        if (videoId.equals(episodeTitleFor)) return; // already have it
+        String[] parts = videoId.split(":");
+        if (parts.length < 3) return;
+        final int curSeason, curEpisode;
+        final String seriesId;
+        try {
+            curSeason = Integer.parseInt(parts[parts.length - 2]);
+            curEpisode = Integer.parseInt(parts[parts.length - 1]);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < parts.length - 2; i++) {
+                if (i > 0) sb.append(":");
+                sb.append(parts[i]);
+            }
+            seriesId = sb.toString();
+        } catch (Exception e) { return; }
+        final AddonManager mgr = ((CahayaApp) getApplication()).addons();
+        mgr.meta(seriesId.startsWith("tmdb:") ? AddonManager.TMDB_ADDON
+                : AddonManager.DEFAULT_ADDON, "series", seriesId,
+                new AddonManager.Callback<MetaDetails>() {
+                    @Override public void onResult(MetaDetails meta) {
+                        if (destroyed || meta == null) return;
+                        for (MetaDetails.VideoInfo vi : meta.videos) {
+                            if (vi.id.equals(videoId)
+                                    || (vi.season == curSeason && vi.episode == curEpisode)) {
+                                episodeTitle = vi.title;
+                                episodeTitleFor = videoId;
+                                // v1.36.3: the episode title just arrived —
+                                // refresh the navigation title so it reads
+                                // "S1E8 - Series - Episode Title" everywhere.
+                                main.post(() -> {
+                                    if (destroyed) return;
+                                    if (titleView != null) titleView.setText(displayTitle());
+                                });
+                                break;
+                            }
+                        }
+                    }
+                    @Override public void onError(Exception e) { /* no subtitle */ }
+                });
+    }
+
+    /** (Re)start the flash cycle — first flash right away, then
+     *  every 2 min for 10 s. */
+    private void startNowPlayingFlashes() {
+        main.removeCallbacks(nowPlayingShow);
+        main.removeCallbacks(nowPlayingHide);
+        main.post(nowPlayingShow);
+    }
+
+    /** Stop the flash cycle and hide the card. */
+    private void stopNowPlayingFlashes() {
+        main.removeCallbacks(nowPlayingShow);
+        main.removeCallbacks(nowPlayingHide);
+        if (nowPlayingDotAnim != null) nowPlayingDotAnim.cancel();
+        if (nowPlayingDot != null) nowPlayingDot.setAlpha(1f);
+        if (nowPlayingCard != null) nowPlayingCard.setVisibility(View.GONE);
     }
 
     // =====================================================================
@@ -1058,7 +1380,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 playNextTorrent(nextTitle, nextVideoId, nextPoster, s);
                 return;
             }
-            switchToStream(s.url, s.headers, nextTitle, nextVideoId, nextPoster);
+            // v1.34.4: carry the picked stream's provider subtitles
+            // (MovieBox's own captions) into the switch — switchToStream
+            // clears the old ones, and fetchOnlineSubtitles only brings
+            // addon tracks, so without this the next episode has none.
+            switchToStream(s.url, s.headers, nextTitle, nextVideoId, nextPoster, s.subtitles);
         }, streamUrl, "Playing");
     }
 
@@ -1089,7 +1415,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                     @Override public void onReady(String httpUrl, String fileName) {
                         main.post(() -> {
                             if (dlg.isShowing()) dlg.dismiss();
-                            switchToStream(httpUrl, null, nextTitle, nextVideoId, nextPoster);
+                            switchToStream(httpUrl, null, nextTitle, nextVideoId, nextPoster, null);
                         });
                     }
 
@@ -1108,10 +1434,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
      *  episode's progress is saved first. */
     private void switchToStream(String url,
                                 java.util.Map<String, String> headers,
-                                String nTitle, String nVideoId, String nPoster) {
+                                String nTitle, String nVideoId, String nPoster,
+                                java.util.List<com.patrisius.cahaya.addon.SubtitleItem> subs) {
         saveCurrentProgress();
         title = nTitle;
-        titleView.setText(nTitle);
+        titleView.setText(displayTitle());
         videoId = nVideoId;
         poster = nPoster;
         streamUrl = url;
@@ -1142,6 +1469,15 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         } catch (Throwable ignored) {}
         onlineRaw.clear();
         onlineRanked.clear();
+        // v1.34.4: the picked stream's provider subtitles (MovieBox's
+        // own captions) belong to THIS stream — restore them after the
+        // clear, before fetchOnlineSubtitles adds the addon tracks.
+        if (subs != null && !subs.isEmpty()) {
+            onlineRaw.addAll(subs);
+            onlineRanked = SubtitleRanker.rank(onlineRaw, prefs.preferredLang);
+        }
+        android.util.Log.d("CahayaSubs", "switchToStream subs=" + (subs == null ? "null" : subs.size())
+                + " onlineRaw=" + onlineRaw.size() + " ranked=" + onlineRanked.size());
         subsLoading = false;
         mpvTimePos = -1;
         mpvDuration = -1;
@@ -1323,7 +1659,11 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         timeDur.setText(dur > 1 ? TimeFmt.clock(dur) : "--:--");
         seek.setProgress(pos, dur > 1 ? dur : 0);
         boolean showSpin = buffering || (pos <= 0 && !fileLoaded);
-        spinner.setVisibility(showSpin ? View.VISIBLE : View.GONE);
+        // v1.35.0: while a TV channel is switching, the loading
+        // overlay (setTvLoading) owns the spinner — don't fight it.
+        if (!(tvMode && tvLoading)) {
+            spinner.setVisibility(showSpin ? View.VISIBLE : View.GONE);
+        }
     }
 
     // =====================================================================
@@ -1696,13 +2036,42 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         title = ch.name;
         TvLog.log("tv zap #" + (index + 1) + " " + ch.name
                 + " servers=" + ch.serverCount());
-        if (titleView != null) titleView.setText(title);
+        if (titleView != null) titleView.setText(displayTitle());
         showTvBanner(ch);
         if (tvChannelAdapter != null) tvChannelAdapter.notifyDataSetChanged();
         if (tvChannelList != null) tvChannelList.setSelection(index);
         tvTryCount = 0;
-        tvTryIndex = ch.lastGoodServer < ch.serverCount() ? ch.lastGoodServer : 0;
+        // v1.35.0: start at the server that last played OK for this
+        // channel (persisted by URL, so it survives playlist
+        // refreshes); fall back to the in-memory index, then 0.
+        int start = TvChannelStore.lastGoodIndex(this, ch);
+        if (start < 0) start = ch.lastGoodServer < ch.serverCount() ? ch.lastGoodServer : 0;
+        tvTryIndex = start;
         tryTvServer(tvTryIndex);
+    }
+
+    /** v1.35.0: TV loading overlay — the spinning indicator plus a
+     *  line saying which channel and server is being tried. Shown
+     *  for every server attempt (direct and YouTube alike) and
+     *  hidden once the stream is in or all servers have failed. */
+    private void setTvLoading(boolean show, String text) {
+        if (spinner != null) spinner.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (tvLoadingLabel != null) {
+            tvLoadingLabel.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (text != null) tvLoadingLabel.setText(text);
+        }
+    }
+
+    /** v1.35.1: true when this channel has at least one server that
+     *  is not remembered dead. Dead servers are only skipped when a
+     *  live alternative exists — when all are dead, we try them
+     *  anyway (one may have recovered). */
+    private boolean hasLiveServer(TvChannel ch) {
+        if (ch == null) return false;
+        for (TvChannel.Server s : ch.servers) {
+            if (!TvChannelStore.isDead(this, s.url)) return true;
+        }
+        return false;
     }
 
     /** Attempt one server of the current channel. A YouTube server
@@ -1717,11 +2086,21 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         if (srv == null) return;
         tvTryIndex = serverIdx;
         tvTryCount++;
+        // v1.35.1: skip a remembered-dead server when a live one
+        // exists, instead of waiting out the 8 s watchdog on it.
+        if (TvChannelStore.isDead(this, srv.url) && hasLiveServer(ch)) {
+            TvLog.log("tv skip dead server " + (serverIdx + 1) + "/" + ch.serverCount()
+                    + " " + srv.label + " " + ch.name);
+            tryNextTvServer();
+            return;
+        }
         tvPendingAudioUrl = null; // a new attempt clears any stale audio
         TvLog.log("tv try server " + (serverIdx + 1) + "/" + ch.serverCount()
                 + " " + srv.label + " " + ch.name);
+        // v1.35.0: show the loading overlay for this attempt.
+        setTvLoading(true, ch.name + "  ·  server " + (serverIdx + 1)
+                + "/" + ch.serverCount() + "  ·  " + srv.label);
         if (srv.isYouTube()) {
-            if (spinner != null) spinner.setVisibility(View.VISIBLE);
             final int reqIndex = tvIndex;
             final int reqServer = serverIdx;
             final int reqGen = tvLoadGen;
@@ -1730,13 +2109,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                         IptvPlaylist.resolveYouTube(PlayerActivity.this, srv.youtubeId);
                 main.post(() -> {
                     if (destroyed) return;
-                    if (spinner != null) spinner.setVisibility(View.GONE);
                     // The user may have zapped on already — never
                     // load a stale resolution over the new channel.
                     if (tvIndex != reqIndex || tvTryIndex != reqServer
                             || tvLoadGen != reqGen) return;
                     if (r == null || r.videoUrl == null) {
                         TvLog.log("tv yt resolve failed, next server");
+                        // v1.35.1: this YouTube server failed — remember it.
+                        TvChannelStore.markDead(PlayerActivity.this, srv.url);
                         tryNextTvServer();
                         return;
                     }
@@ -1758,6 +2138,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         TvChannel ch = tvChannels.get(tvIndex);
         if (tvTryCount >= ch.serverCount()) {
             TvLog.log("tv all servers failed " + ch.name);
+            setTvLoading(false, null); // v1.35.0: hide the loading overlay
             Toast.makeText(this, "Couldn't play " + ch.name,
                     Toast.LENGTH_LONG).show();
             return;
@@ -1785,6 +2166,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             if (loadGen != tvLoadGen || !tvLoading) return;
             TvLog.log("tv load watchdog fired, next server");
             tvLoading = false;
+            // v1.35.1: this server never loaded — remember it as dead.
+            if (tvChannels != null && tvIndex >= 0 && tvIndex < tvChannels.size()) {
+                TvChannel.Server cur = tvChannels.get(tvIndex).serverAt(tvTryIndex);
+                if (cur != null && cur.url != null) {
+                    TvChannelStore.markDead(PlayerActivity.this, cur.url);
+                }
+            }
             tryNextTvServer();
         }, 8000);
         try {
