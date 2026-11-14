@@ -245,11 +245,9 @@ public class DetailsActivity extends Activity {
                 ? details.name + " — " + vi.title
                 : details.name;
 
-        final AlertDialog progress = new AlertDialog.Builder(this)
-                .setMessage("Finding streams…")
-                .setCancelable(false)
-                .create();
-        progress.show();
+        // v1.42.0: animated loading dialog (spinner + message) —
+        // the old bare text looked frozen while 65 providers ran.
+        final AlertDialog progress = LoadingDialog.show(this, "Finding streams…");
 
         final List<StreamItem> all = new ArrayList<>();
         final List<String> addonUrls = new ArrayList<>(mgr.addonUrls());
@@ -261,20 +259,50 @@ public class DetailsActivity extends Activity {
         }
         // v1.23.0: pending counts EVERY counted source exactly —
         // addons + plugins + FibWatch (1) + JS scrapers (array length).
-        // The old "+3" dated from 2 JS providers; with 4 providers the
+        // The old "+3" dated from 2 JS providers; with 65 providers the
         // picker fired after 3 of 5 completions and dropped the late
         // ones. The site sniffer count is added below (addAndGet) once
         // collect exists; all completions post to main, so none can
         // fire before this method returns.
-        String[] jsProviders = {
-                JsScraperRunner.PROVIDER_4KHDHUB,
-                JsScraperRunner.PROVIDER_PLAYIMDB,
-                JsScraperRunner.PROVIDER_MOVIEBOX,
-                JsScraperRunner.PROVIDER_MOVIEBOX_TV,
+        // v1.39.0: all 65 Nuvio providers run in one batch. MovieBox
+        // + the fast ones (VidRock, DesiFlix) are first in the array
+        // and first in the picker; the rest land in "More".
+        // v1.43.0: progressive picker. The picker no longer waits
+        // for all 65 providers: it opens as soon as the priority
+        // providers (MovieBox, VidRock, DesiFlix, 4khdhub) are back
+        // — or 5s after the search starts, whichever comes first —
+        // and late providers append their column live via
+        // StreamPicker.addStreams(). v1.44.0: no timeout on provider
+        // load at all — a slow provider runs until it returns or
+        // errors (the 15s/30s timeouts cut providers off before
+        // they could finish under the 65-WebView load). The picker
+        // still opens at 5s, so a slow provider never blocks it.
+        String[] jsProviders = JsScraperRunner.ALL_NUVIO_PROVIDERS;
+        final java.util.Set<String> PRIORITY =
+                new java.util.HashSet<>(java.util.Arrays.asList(
+                        "moviebox", "movieboxtv", "vidrock", "desiflix", "4khdhub"));
+        final java.util.Set<String> priorityDone =
+                java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+        final boolean[] pickerShown = {false};
+        final android.os.Handler earlyHandler =
+                new android.os.Handler(android.os.Looper.getMainLooper());
+        final Runnable showEarly = () -> {
+            if (pickerShown[0]) return;
+            synchronized (all) {
+                if (all.isEmpty()) return; // nothing yet — let done show it
+            }
+            pickerShown[0] = true;
+            earlyHandler.removeCallbacksAndMessages(null);
+            progress.dismiss();
+            showStreamPicker(title, videoId, new ArrayList<>(all));
         };
+        // Deadline: open the picker within 5s even if a priority
+        // provider is slow — the rest append live.
+        earlyHandler.postDelayed(showEarly, 5000);
         final AtomicInteger pending = new AtomicInteger(
                 addonUrls.size() + enabledPlugins.size() + 1 + jsProviders.length);
         if (pending.get() == 0) {
+            earlyHandler.removeCallbacksAndMessages(null);
             progress.dismiss();
             Toast.makeText(this, "No addons or plugins installed", Toast.LENGTH_SHORT).show();
             return;
@@ -284,7 +312,14 @@ public class DetailsActivity extends Activity {
             if (pending.decrementAndGet() > 0) {
                 return;
             }
+            earlyHandler.removeCallbacksAndMessages(null);
             progress.dismiss();
+            if (pickerShown[0]) {
+                // Picker already open — late providers appended live.
+                // All providers are done now, so hide the loading footer.
+                StreamPicker.setLoading(false);
+                return;
+            }
             if (all.isEmpty()) {
                 Toast.makeText(DetailsActivity.this,
                         "No streams found — install a streams addon or plugin",
@@ -293,6 +328,7 @@ public class DetailsActivity extends Activity {
             }
             // v1.5.1: StreamPicker sorts seeders-desc within each column.
             showStreamPicker(title, videoId, all);
+            StreamPicker.setLoading(false);
         };
 
         AddonManager.Callback<List<StreamItem>> collect =
@@ -302,6 +338,9 @@ public class DetailsActivity extends Activity {
                         synchronized (all) {
                             all.addAll(items);
                         }
+                        if (pickerShown[0]) {
+                            main.post(() -> StreamPicker.addStreams(items));
+                        }
                         main.post(done);
                     }
 
@@ -310,6 +349,15 @@ public class DetailsActivity extends Activity {
                         main.post(done); // tolerate: a dead source just contributes nothing
                     }
                 };
+        // v1.43.0: note a JS provider's completion so the picker
+        // can open early once the priority set is back.
+        final java.util.function.Consumer<String> noteProviderDone = pid -> {
+            if (!PRIORITY.contains(pid)) return;
+            priorityDone.add(pid);
+            if (!pickerShown[0] && priorityDone.containsAll(PRIORITY)) {
+                main.post(showEarly);
+            }
+        };
         for (String base : addonUrls) {
             mgr.streams(base, itemType, videoId, collect);
         }
@@ -380,11 +428,13 @@ public class DetailsActivity extends Activity {
                     new JsScraperRunner.Callback() {
                         @Override
                         public void onResult(List<StreamItem> items) {
+                            noteProviderDone.accept(providerId);
                             collect.onResult(items);
                         }
 
                         @Override
                         public void onError(String message) {
+                            noteProviderDone.accept(providerId);
                             collect.onError(new Exception(message));
                         }
                     });

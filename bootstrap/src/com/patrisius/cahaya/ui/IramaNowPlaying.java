@@ -28,10 +28,18 @@ import android.widget.Toast;
  *  foreground MusicService that extends MediaLibraryService, so its
  *  MediaSession is reachable from another app with the plain
  *  framework MediaBrowser — no new dependency, no code copied, no
- *  tokens shared. The card shows only while a session exists
- *  (i.e. Irama is running); it hides itself on disconnect or
- *  connection failure, so an Irama that was never opened costs
- *  nothing. Tap the card (or the Music tile) to open Irama; the
+ *  tokens shared. v1.44.0: the card sits at the BOTTOM of the Home
+ *  screen (was overlaid on the top of the hero banner) and only
+ *  appears while music plays — it hides at once when music stops,
+ *  and 5 minutes after a pause (resuming within those 5 minutes
+ *  keeps it). v1.44.1: it is pinned below the Home ScrollView, so
+ *  it stays visible at the bottom of the screen like a bottom bar
+ *  instead of being buried at the end of the scrollable content.
+ *  v1.44.2: the 5 minutes run from the pause itself (the state's
+ *  own timestamp), so a pause that is already 5+ minutes old when
+ *  Cahaya (re)connects hides the card at once; and the content
+ *  pane's bottom padding is 0 so the card sits flush at the very
+ *  bottom edge. Tap the card (or the Music tile) to open Irama; the
  *  buttons send plain transport commands (play/pause/next).
  *  The installed Irama on the box is the debug build
  *  (com.patrisius.irama.debug); the release id is tried first so a
@@ -187,6 +195,15 @@ public class IramaNowPlaying {
         }
     };
 
+    /** v1.44.0: hides the card 5 minutes after a pause. Posted
+     *  when the state turns PAUSED; cancelled on play, and on
+     *  stop/disconnect. */
+    private final Runnable hideAfterPause = new Runnable() {
+        @Override public void run() {
+            setVisible(false);
+        }
+    };
+
     public IramaNowPlaying(Activity act) {
         this.act = act;
     }
@@ -195,15 +212,22 @@ public class IramaNowPlaying {
         return Math.round(v * act.getResources().getDisplayMetrics().density);
     }
 
-    /** Build the card once; MainActivity overlays it on the hero. */
+    /** Build the card once; MainActivity pins it at the bottom of
+     *  the Home screen. */
     public View getView() {
         if (card != null) return card;
         LinearLayout c = new LinearLayout(act);
         c.setOrientation(LinearLayout.VERTICAL);
         c.setPadding(dp(12), dp(8), dp(12), dp(8));
-        // v1.30.3: transparent — the card floats over the hero
-        // backdrop. Text carries a shadow so it stays readable.
-        c.setBackgroundColor(Color.TRANSPARENT);
+        // v1.44.0: the card sits at the bottom of the Home body
+        // now (was a transparent overlay on the hero), so it gets
+        // a dark bar background to read as a distinct element
+        // instead of floating text.
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(Color.parseColor("#CC1E1E1E"));
+        bg.setCornerRadius(dp(8));
+        c.setBackground(bg);
         c.setFocusable(true);
         c.setClickable(true);
         c.setVisibility(View.GONE);
@@ -345,7 +369,10 @@ public class IramaNowPlaying {
 
     private void setVisible(boolean show) {
         if (card == null) return;
-        if (!show) card.removeCallbacks(tick);
+        if (!show) {
+            card.removeCallbacks(tick);
+            card.removeCallbacks(hideAfterPause);
+        }
         card.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
@@ -402,7 +429,39 @@ public class IramaNowPlaying {
         if (ctrl == null || card == null) { setVisible(false); return; }
         MediaMetadata md = ctrl.getMetadata();
         PlaybackState st = ctrl.getPlaybackState();
-        if (md == null && (st == null || st.getState() == PlaybackState.STATE_NONE)) {
+        int state = st != null ? st.getState() : PlaybackState.STATE_NONE;
+        boolean playing = state == PlaybackState.STATE_PLAYING;
+        boolean paused = state == PlaybackState.STATE_PAUSED;
+        // v1.44.0: the card only appears while music plays. Stopped
+        // (or no session/metadata at all) hides it at once; a pause
+        // keeps it visible for 5 minutes, then it hides — resuming
+        // within those 5 minutes cancels the hide and it stays.
+        // v1.44.2: those 5 minutes run from the PAUSE itself, not
+        // from when Cahaya noticed it. The user may have paused
+        // inside Irama while Cahaya was disconnected (onPause tears
+        // the browser down), so the state's own timestamp — the
+        // moment the pause landed — is the honest clock. If the
+        // pause is already 5+ minutes old when we (re)connect,
+        // hide at once instead of showing the card for another
+        // 5 minutes.
+        if (playing) {
+            card.removeCallbacks(hideAfterPause);
+        } else if (paused) {
+            long remaining = 5 * 60 * 1000;
+            if (st != null) {
+                long pauseAt = st.getLastPositionUpdateTime();
+                if (pauseAt > 0) {
+                    long elapsed = android.os.SystemClock.elapsedRealtime() - pauseAt;
+                    if (elapsed > 0) remaining = 5 * 60 * 1000 - elapsed;
+                }
+            }
+            card.removeCallbacks(hideAfterPause);
+            if (remaining <= 0) {
+                setVisible(false);
+                return;
+            }
+            card.postDelayed(hideAfterPause, remaining);
+        } else {
             setVisible(false);
             return;
         }
@@ -424,7 +483,6 @@ public class IramaNowPlaying {
         } else {
             artView.setImageBitmap(null);
         }
-        boolean playing = st != null && st.getState() == PlaybackState.STATE_PLAYING;
         lastKnownPlaying = playing;
         playBtn.setText(playing ? "❚❚" : "▶");
         // v1.30.3: progress line + elapsed / total time. The state's

@@ -10,8 +10,8 @@ Nuvio and CloudStream — with support for community addons and plugins.
 ## Releases
 
 One codebase, one universal APK per build (arm64-v8a + armeabi-v7a,
-TV + phone UI auto-detected). Current release: **1.37.3** (build
-147) — the same build runs on the phone and on the TV box.
+TV + phone UI auto-detected). Current release: **1.44.2** (build
+158) — the same build runs on the phone and on the TV box.
 
 Install: phone — download the APK and tap it (My Files → Internal
 storage → Download). Box — sideload with
@@ -24,6 +24,97 @@ GitHub Releases — builds are distributed by sideload.
 
 ### Changelog
 
+- **1.44.2** — Three Home fixes. The Irama card now sits flush
+  at the very bottom edge (the content pane's 28dp bottom
+  padding left a strip below it). The 5-minute hide-after-pause
+  now runs from the pause itself (the playback state's own
+  timestamp), so a pause that is already 5+ minutes old when
+  Cahaya reconnects hides the card at once instead of showing
+  it for another 5 minutes. Content-list pictures are ~20%
+  smaller with the same ratios (Trending/Search posters
+  102x160 → 80x128, Playing History thumbs 192x112 → 152x90).
+- **1.44.1** — Irama card pinned to the bottom of the Home
+  screen. 1.44.0 put it at the bottom of the scrollable
+  content, so it was buried under every row and only visible
+  after scrolling to the very end. Now it sits below the
+  ScrollView in the home root, so it stays visible at the
+  bottom of the screen like a bottom bar.
+- **1.44.0** — No timeout on provider load, and the Irama
+  now-playing card moves to the bottom of the Home body.
+  Providers now run until they return or error — no timeout
+  at all (the picker is progressive, so a slow provider never
+  blocks it; it just appends its column when it lands). The
+  Irama card moves from the top of the hero banner to the
+  bottom of the Home body, with a dark bar background, and
+  only appears while music plays — it hides at once when
+  music stops, and 5 minutes after a pause (resuming within
+  those 5 minutes keeps it).
+- **1.43.2** — Loading indicator moved to the top of the picker.
+  At the bottom it sat below the 480dp columns and was never
+  visible. Now it reads "Loading stream while you can choose
+  it" with the spinner before the text, above the columns, so
+  it is always visible while providers are still loading.
+- **1.43.1** — Fix: links stopped appearing after the 1.43.0
+  progressive picker. Root cause: the 15s provider timeout was
+  too short — creating 65 WebViews at once on a 2GB box means
+  most providers need more than 15s to download their JS and
+  fetch, so they timed out and never contributed. Timeout is
+  now 30s (the picker still opens at 5s, so perceived speed
+  is unchanged; the timeout only caps hung providers). Plus a
+  loading footer in the picker: a spinner + "Finding more
+  streams…" while providers are still running, hidden once
+  every provider has finished, so the list never looks done
+  while columns are still coming.
+- **1.43.0** — Progressive stream picker + 15s provider timeout.
+  The picker no longer waits for all 65 providers: it opens as
+  soon as the priority providers (MovieBox, VidRock, DesiFlix,
+  4khdhub) are back — or 5s after the search starts, whichever
+  comes first — and late providers append their column live
+  while the picker is open, in Details, History, and Next alike.
+  Each provider now times out after 15s instead of 90s, so a
+  hung provider can't hold the picker. NetMirror (~47s) times
+  out by design — speed wins over the slowest provider.
+- **1.42.0** — History and Next now run all 65 providers too.
+  They were still on the old 4-provider list (MovieBox, 4khdhub,
+  PlayIMDb, MovieBox TV), which is why they showed only 3
+  columns while Details showed the full set — now all three
+  stream-finding flows run `ALL_NUVIO_PROVIDERS`. Plus an
+  animated loading dialog: the bare "Finding streams…" text is
+  now a spinning accent-blue progress indicator beside the
+  message, in Details, History, and Next alike.
+- **1.41.0** — Nicer picker UI, same carousel everywhere. The
+  focused link now gets a soft translucent accent pill behind it
+  (not just blue text), and the focused column's header turns
+  accent blue with a thin underline bar, so the active provider
+  reads at a glance; headers are bold. And confirmed: the one
+  `StreamPicker` is shared by Details Play, the player's Next
+  navigation, and Playing History — so the carousel and the new
+  look apply to all three, no separate picker anywhere.
+- **1.40.0** — Center-locked carousel picker. The "More" bucket is
+  gone — every provider gets its own column (MovieBox first, then
+  VidRock, DesiFlix, 4khdhub, Torrentio, PlayIMDb, then the rest
+  in their own columns, then Other). The focused column stays
+  centered in the strip: pressing Right again scrolls the strip
+  left so the next column comes to the center. Same vertically:
+  the focused link stays centered in its column, the list scrolls
+  under it. Columns are a fixed 300dp in a horizontal scrolling
+  strip, so any number of providers fits.
+- **1.39.0** — All 65 Nuvio providers now run in Cahaya (the full
+  `All-in-One-Nuvio` set, minus FibWatch and Torrentio which the
+  app already has, plus the local MovieBox TV). Picker order is
+  priority-first: **MovieBox, VidRock, DesiFlix, 4khdhub,
+  Torrentio, PlayIMDb**, then a **More** column holding every
+  other provider — each stream's info line shows its provider
+  id, so you can tell which one returned it. Providers are
+  downloaded at runtime, never bundled. (Note: 65 WebViews start
+  in parallel on a 2 GB box — if it struggles, we'll trim to the
+  ones that return streams.)
+- **1.38.0** — Two new stream providers, both Nuvio-format and
+  downloaded at runtime like 4khdhub: **VidRock** (direct m3u8/mp4
+  links; The Mongoose returned 2 streams in 3.4 s) and **DesiFlix**
+  (Bollywood/Hollywood/South Indian, dual-audio direct links; The
+  Mongoose returned 3 streams in 1.8 s). Each gets its own picker
+  column after MovieBox; verified live 2026-11-13.
 - **1.37.3** — Anti-block hardening: MovieBox file requests now carry
   the official MovieBox app User-Agent (phone + TV) instead of the
   app's own UA, so the file CDN sees traffic identical to the real

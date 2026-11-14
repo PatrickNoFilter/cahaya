@@ -1274,11 +1274,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             seriesId = sb.toString();
         } catch (Exception e) { hint("No next episode for this title"); return; }
 
-        final AlertDialog progress = new AlertDialog.Builder(this)
-                .setMessage("Finding next episode…")
-                .setCancelable(false)
-                .create();
-        progress.show();
+        // v1.42.0: animated loading dialog (spinner + message) —
+        // the old bare text looked frozen while 65 providers ran.
+        final AlertDialog progress = LoadingDialog.show(this, "Finding next episode…");
 
         final AddonManager mgr = ((CahayaApp) getApplication()).addons();
         // v1.5.0: TMDB-sourced series fetch meta from the TMDB addon.
@@ -1344,16 +1342,44 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         for (Plugin p : plugins.plugins()) if (p.enabled) enabled.add(p);
         // v1.23.0: pending counts every counted source exactly (see
         // DetailsActivity — the old "+3" dropped late providers).
-        String[] jsProviders = {JsScraperRunner.PROVIDER_4KHDHUB,
-                JsScraperRunner.PROVIDER_PLAYIMDB,
-                JsScraperRunner.PROVIDER_MOVIEBOX,
-                JsScraperRunner.PROVIDER_MOVIEBOX_TV};
+        // v1.42.0: all 65 Nuvio providers, same as Details Play —
+        // Next used to run only the old 4, so it showed just
+        // MovieBox + 4khdhub (+ Torrentio from the addon).
+        // v1.43.0: progressive picker (see DetailsActivity) — opens
+        // once the priority providers are back or 5s elapse;
+        // late providers append their column live.
+        String[] jsProviders = JsScraperRunner.ALL_NUVIO_PROVIDERS;
+        final java.util.Set<String> PRIORITY =
+                new java.util.HashSet<>(java.util.Arrays.asList(
+                        "moviebox", "movieboxtv", "vidrock", "desiflix", "4khdhub"));
+        final java.util.Set<String> priorityDone =
+                java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+        final boolean[] pickerShown = {false};
+        final android.os.Handler earlyHandler =
+                new android.os.Handler(android.os.Looper.getMainLooper());
+        final Runnable showEarly = () -> {
+            if (pickerShown[0] || destroyed) return;
+            synchronized (all) {
+                if (all.isEmpty()) return;
+            }
+            pickerShown[0] = true;
+            earlyHandler.removeCallbacksAndMessages(null);
+            progress.dismiss();
+            showNextPicker(nextTitle, nextVideoId, nextPoster,
+                    new ArrayList<>(all), nv.title);
+        };
+        earlyHandler.postDelayed(showEarly, 5000);
         final AtomicInteger pending = new AtomicInteger(
                 addonUrls.size() + enabled.size() + 1 + jsProviders.length);
         final Runnable done = () -> {
             if (pending.decrementAndGet() > 0) return;
             if (destroyed) return;
+            earlyHandler.removeCallbacksAndMessages(null);
             progress.dismiss();
+            if (pickerShown[0]) {
+                StreamPicker.setLoading(false);
+                return; // picker already open — late providers appended live
+            }
             if (all.isEmpty()) {
                 Toast.makeText(this, "No streams found for next episode",
                         Toast.LENGTH_LONG).show();
@@ -1361,16 +1387,27 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             }
             // v1.5.1: StreamPicker sorts seeders-desc within each column.
             showNextPicker(nextTitle, nextVideoId, nextPoster, all, nv.title);
+            StreamPicker.setLoading(false);
         };
         AddonManager.Callback<List<StreamItem>> collect =
                 new AddonManager.Callback<List<StreamItem>>() {
                     @Override public void onResult(List<StreamItem> items) {
                         synchronized (all) { all.addAll(items); }
+                        if (pickerShown[0]) {
+                            main.post(() -> StreamPicker.addStreams(items));
+                        }
                         main.post(done);
                     }
 
                     @Override public void onError(Exception e) { main.post(done); }
                 };
+        final java.util.function.Consumer<String> noteProviderDone = pid -> {
+            if (!PRIORITY.contains(pid)) return;
+            priorityDone.add(pid);
+            if (!pickerShown[0] && priorityDone.containsAll(PRIORITY)) {
+                main.post(showEarly);
+            }
+        };
         for (String base : addonUrls) {
             mgr.streams(base, "series", nextVideoId, collect);
         }
@@ -1413,10 +1450,12 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                     nv.season, nv.episode, meta.name, scraperYear,
                     new JsScraperRunner.Callback() {
                         @Override public void onResult(List<StreamItem> items) {
+                            noteProviderDone.accept(providerId);
                             collect.onResult(items);
                         }
 
                         @Override public void onError(String message) {
+                            noteProviderDone.accept(providerId);
                             collect.onError(new Exception(message));
                         }
                     });

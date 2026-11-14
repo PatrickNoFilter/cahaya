@@ -71,6 +71,57 @@ public class JsScraperRunner {
      *  /wefeed-tv-bff/*), which returns real direct MP4s where the phone
      *  backend serves only the notice video. */
     public static final String PROVIDER_MOVIEBOX_TV = "movieboxtv";
+    /** v1.38.0: VidRock — Nuvio provider, downloaded at runtime
+     *  (UPSTREAM_BASE + "vidrock.js"). Fetch-only, returns direct
+     *  m3u8/mp4 links. Verified live 2026-11-13 (The Mongoose:
+     *  2 streams, 3.4s). */
+    public static final String PROVIDER_VIDROCK = "vidrock";
+    /** v1.38.0: DesiFlix — Nuvio provider, downloaded at runtime
+     *  (UPSTREAM_BASE + "desiflix.js"). Bollywood/Hollywood/South
+     *  Indian, dual-audio, direct download links. Verified live
+     *  2026-11-13 (The Mongoose: 3 streams, 1.8s). */
+    public static final String PROVIDER_DESIFLIX = "desiflix";
+    /** v1.39.0: every Nuvio provider (65 = the 66 files in
+     *  NuvioPlugin/All-in-One-Nuvio/providers, minus fibwatch and
+     *  torrentio which Cahaya already has as a bundled scraper /
+     *  an addon, plus the local movieboxtv which has no upstream
+     *  file). Priority providers first — MovieBox, VidRock, DesiFlix,
+     *  4khdhub, PlayIMDb — then the rest alphabetically; they all
+     *  run in one batch and land in the picker's "More" column
+     *  (each stream's info line shows its provider id, so the
+     *  source is identifiable). Provider JS is downloaded at
+     *  runtime, never bundled (no LICENSE upstream). Two are
+     *  known-dead/slow and fail soft: playimdb (backend returns
+     *  no stream_urls) and netmirror (~47 s). */
+    public static final String[] ALL_NUVIO_PROVIDERS = {
+            "moviebox", "movieboxtv", "vidrock", "desiflix",
+            "4khdhub", "playimdb",
+            "1shows", "allanime", "allmovieland", "allwish",
+            "anidb", "anikototv", "anime-sama", "animedekho",
+            "animekai", "animepahe", "animesalt", "animetsu",
+            "animeworld", "animezey", "anizone", "castle",
+            "cineby", "cinefreak", "cinemacity", "ctgmovies",
+            "dahmermovies", "dahmermovies-4k", "dooflix",
+            "einthusan", "goated", "gramcinema", "hdghartv",
+            "hdhub4u", "hianime", "hindmoviez", "kisskh",
+            "kurage", "mapple", "moonflix", "movieblast",
+            "movies4u", "moviesdrive", "movieshunt", "moviesmod",
+            "movix", "nakios", "netmirror", "onlykdrama",
+            "peachify", "persianstremio", "purstream", "reanime",
+            "showbox", "topcartoons", "uhdmovies", "vegamovies",
+            "videasy", "vidfast", "vidlink", "vidlove",
+            "vidsrc", "vixsrc", "xpass", "zinkmovies",
+    };
+    /** v1.39.0: true when a StreamItem source is one of the Nuvio
+     *  providers — used by the picker to route everything that is
+     *  not a priority provider into the "More" column. */
+    public static boolean isNuvioProvider(String src) {
+        if (src == null) return false;
+        for (String p : ALL_NUVIO_PROVIDERS) {
+            if (p.equals(src)) return true;
+        }
+        return false;
+    }
     private final String providerId;
     private final String providerUrl;
     private static final String UA =
@@ -195,9 +246,13 @@ public class JsScraperRunner {
             webView.loadDataWithBaseURL("https://localhost/",
                     "<html><head><meta charset='utf-8'></head><body></body></html>",
                     "text/html", "UTF-8", null);
-            main.postDelayed(new Runnable() {
-                @Override public void run() { fail("timeout after 90s"); }
-            }, 90000);
+            // v1.44.0: no timeout on provider load, at the user's
+            // word. A slow provider now runs until it returns or
+            // errors instead of being cut off (the picker is
+            // progressive, so a slow provider never blocks it —
+            // it just appends its column when it lands). The
+            // loading indicator stays up while any provider is
+            // still running.
         } catch (Throwable t) {
             fail("WebView setup failed: " + t.getMessage());
         }

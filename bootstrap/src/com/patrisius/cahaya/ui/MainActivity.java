@@ -362,7 +362,13 @@ public class MainActivity extends Activity {
         content = new FrameLayout(this);
         // v1.5.6: no gap between the sidebar and the body — the
         // body's left padding is 0 in both sidebar states.
-        content.setPadding(0, dp(8), phoneMode ? 0 : dp(28), phoneMode ? dp(12) : dp(28));
+        // v1.44.2: bottom padding is 0 — the Irama now-playing
+        // card is pinned to the bottom of the Home screen, and the
+        // old 28dp bottom padding left a visible strip of
+        // background below it. Rows keep their own bottom padding
+        // (dp(14) per row), so nothing else loses its breathing
+        // room.
+        content.setPadding(0, dp(8), phoneMode ? 0 : dp(28), 0);
         contentCol.addView(content, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -757,6 +763,24 @@ public class MainActivity extends Activity {
         homeRoot.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
+        // v1.44.1: Irama now-playing card pinned at the BOTTOM of
+        // the Home screen, below the scrollable rows (v1.44.0 put
+        // it at the bottom of the scroll content, so it was buried
+        // under every row and only visible after scrolling to the
+        // very end). It only shows while music is playing and hides
+        // 5 minutes after a pause (see IramaNowPlaying).
+        // makeHomeScreen runs before onResume, so connect here too
+        // when resumed.
+        if (iramaNow == null) iramaNow = new IramaNowPlaying(this);
+        View npCard = iramaNow.getView();
+        if (npCard.getParent() instanceof ViewGroup) {
+            ((ViewGroup) npCard.getParent()).removeView(npCard);
+        }
+        homeRoot.addView(npCard, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        if (resumed) iramaNow.connect();
+
         if (!homeLoaded) {
             homeLoaded = true;
             // v1.2.0: the old catalog rows are gone at the user's word
@@ -878,7 +902,10 @@ public class MainActivity extends Activity {
     private View makeContinueCard(ContinueWatching.Item it) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        int w = phoneMode ? dp(160) : dp(200);
+        // v1.44.2: ~20% smaller (was 160dp phone / 200dp TV) so
+        // more history fits per row; the thumb ratio is kept
+        // (TV 192x112 -> 152x90, phone 152x86 -> 120x69).
+        int w = phoneMode ? dp(128) : dp(160);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 w, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.setMargins(0, 0, dp(12), 0);
@@ -889,7 +916,7 @@ public class MainActivity extends Activity {
 
         // Thumbnail with progress overlay
         FrameLayout thumb = new FrameLayout(this);
-        thumb.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), phoneMode ? dp(86) : dp(112)));
+        thumb.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), phoneMode ? dp(69) : dp(90)));
         ImageView poster = new ImageView(this);
         poster.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -977,11 +1004,9 @@ public class MainActivity extends Activity {
      *  it falls back to the stored title with the addon/plugin
      *  sources still running. */
     private void resumeHistoryItem(ContinueWatching.Item it) {
-        final AlertDialog progress = new AlertDialog.Builder(this)
-                .setMessage("Finding streams…")
-                .setCancelable(false)
-                .create();
-        progress.show();
+        // v1.42.0: animated loading dialog (spinner + message) —
+        // the old bare text looked frozen while 65 providers ran.
+        final AlertDialog progress = LoadingDialog.show(this, "Finding streams…");
 
         // Series episode ids look like "tt1234567:1:2" (or
         // "tmdb:293607:1:2"); the meta call needs the bare series
@@ -1069,12 +1094,32 @@ public class MainActivity extends Activity {
         }
         // v1.23.0: pending counts every counted source exactly (see
         // DetailsActivity — the old "+3" dropped late providers).
-        String[] jsProviders = {
-                JsScraperRunner.PROVIDER_4KHDHUB,
-                JsScraperRunner.PROVIDER_PLAYIMDB,
-                JsScraperRunner.PROVIDER_MOVIEBOX,
-                JsScraperRunner.PROVIDER_MOVIEBOX_TV,
+        // v1.42.0: all 65 Nuvio providers, same as Details Play —
+        // History used to run only the old 4, so it showed just
+        // MovieBox + 4khdhub (+ Torrentio from the addon).
+        // v1.43.0: progressive picker (see DetailsActivity) — opens
+        // once the priority providers are back or 5s elapse;
+        // late providers append their column live.
+        String[] jsProviders = JsScraperRunner.ALL_NUVIO_PROVIDERS;
+        final java.util.Set<String> PRIORITY =
+                new java.util.HashSet<>(java.util.Arrays.asList(
+                        "moviebox", "movieboxtv", "vidrock", "desiflix", "4khdhub"));
+        final java.util.Set<String> priorityDone =
+                java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+        final boolean[] pickerShown = {false};
+        final android.os.Handler earlyHandler =
+                new android.os.Handler(android.os.Looper.getMainLooper());
+        final Runnable showEarly = () -> {
+            if (pickerShown[0]) return;
+            synchronized (all) {
+                if (all.isEmpty()) return;
+            }
+            pickerShown[0] = true;
+            earlyHandler.removeCallbacksAndMessages(null);
+            progress.dismiss();
+            showHistoryPicker(it, new ArrayList<>(all));
         };
+        earlyHandler.postDelayed(showEarly, 5000);
         final AtomicInteger pending = new AtomicInteger(
                 addonUrls.size() + enabledPlugins.size() + 1 + jsProviders.length);
 
@@ -1082,7 +1127,12 @@ public class MainActivity extends Activity {
             if (pending.decrementAndGet() > 0) {
                 return;
             }
+            earlyHandler.removeCallbacksAndMessages(null);
             progress.dismiss();
+            if (pickerShown[0]) {
+                StreamPicker.setLoading(false);
+                return; // picker already open — late providers appended live
+            }
             if (all.isEmpty()) {
                 Toast.makeText(MainActivity.this,
                         "No streams found — install a streams addon or plugin",
@@ -1091,6 +1141,7 @@ public class MainActivity extends Activity {
             }
             // v1.5.1: StreamPicker sorts seeders-desc within each column.
             showHistoryPicker(it, all);
+            StreamPicker.setLoading(false);
         };
 
         AddonManager.Callback<List<StreamItem>> collect =
@@ -1100,6 +1151,9 @@ public class MainActivity extends Activity {
                         synchronized (all) {
                             all.addAll(items);
                         }
+                        if (pickerShown[0]) {
+                            main.post(() -> StreamPicker.addStreams(items));
+                        }
                         main.post(done);
                     }
 
@@ -1108,6 +1162,13 @@ public class MainActivity extends Activity {
                         main.post(done);
                     }
                 };
+        final java.util.function.Consumer<String> noteProviderDone = pid -> {
+            if (!PRIORITY.contains(pid)) return;
+            priorityDone.add(pid);
+            if (!pickerShown[0] && priorityDone.containsAll(PRIORITY)) {
+                main.post(showEarly);
+            }
+        };
         for (String base : addonUrls) {
             mgr.streams(base, it.type, it.videoId, collect);
         }
@@ -1139,16 +1200,19 @@ public class MainActivity extends Activity {
                     }
                 });
         for (String pid : jsProviders) {
+            final String providerId = pid;
             new JsScraperRunner(this, pid).run(moviedbId, it.type,
                     season, episode, scraperTitle, scraperYear,
                     new JsScraperRunner.Callback() {
                         @Override
                         public void onResult(List<StreamItem> items) {
+                            noteProviderDone.accept(providerId);
                             collect.onResult(items);
                         }
 
                         @Override
                         public void onError(String message) {
+                            noteProviderDone.accept(providerId);
                             collect.onError(new Exception(message));
                         }
                     });
@@ -1288,12 +1352,11 @@ public class MainActivity extends Activity {
     // not inside homeRows, so it stays pinned at the top while the rows
     // scroll underneath it.
     private LinearLayout heroSlot = null;
-    // v1.30.0: Irama now-playing helper (v1.30.3: the card overlays
-    // the TOP of the hero banner instead of sitting under it).
+    // v1.30.0: Irama now-playing helper (v1.44.0: the card sits at
+    // the bottom of the Home body and only shows while music plays).
     private IramaNowPlaying iramaNow = null;
-    // v1.30.3: Activity has no isResumed() — track it for makeHero,
-    // which runs off the async trending callback and needs to know
-    // whether a connect() is safe yet.
+    // v1.30.3: Activity has no isResumed() — track it for makeHomeScreen,
+    // which needs to know whether a connect() is safe yet.
     private boolean resumed = false;
     private ImageView heroBg = null;
     private TextView heroTitle = null;
@@ -1754,7 +1817,10 @@ public class MainActivity extends Activity {
     private View makeTrendingCard(final CatalogItem item) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        int w = dp(110);
+        // v1.44.2: ~20% smaller (was 110dp wide / 160dp poster)
+        // so more titles fit per row; the 2:3-ish poster ratio is
+        // kept (102x160 -> 80x128).
+        int w = dp(88);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 w, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.setMargins(0, 0, dp(10), 0);
@@ -1764,7 +1830,7 @@ public class MainActivity extends Activity {
         card.setPadding(dp(4), dp(4), dp(4), dp(4));
 
         ImageView poster = new ImageView(this);
-        poster.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(160)));
+        poster.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(128)));
         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
         poster.setBackgroundColor(Color.parseColor("#23262B"));
         card.addView(poster);
@@ -1987,24 +2053,9 @@ public class MainActivity extends Activity {
             hero.setClickable(false);
         }
 
-        // v1.30.3: Irama now-playing card overlays the TOP of the
-        // banner (transparent, over the backdrop). Added last so it
-        // draws above the backdrop; GONE unless Irama is playing.
-        // makeHero runs off the trending callback, which can land
-        // after onResume — connect here too when resumed (onResume's
-        // own connect() is a no-op once the card exists).
-        if (iramaNow == null) iramaNow = new IramaNowPlaying(this);
-        View npCard = iramaNow.getView();
-        if (npCard.getParent() instanceof ViewGroup) {
-            ((ViewGroup) npCard.getParent()).removeView(npCard);
-        }
-        FrameLayout.LayoutParams npLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        npLp.gravity = android.view.Gravity.TOP;
-        hero.addView(npCard, npLp);
-        if (resumed) iramaNow.connect();
-
+        // v1.44.0: the Irama now-playing card no longer overlays
+        // the hero — it sits at the bottom of the Home body (see
+        // makeHomeScreen). Removed from here.
         return hero;
     }
 
@@ -2567,7 +2618,10 @@ public class MainActivity extends Activity {
         // v0.10.5: was 140dp wide / 200dp tall — shrunk ~20% so more
         // titles fit per row and each row takes less vertical space
         // under the pinned hero.
-        int w = dp(110);
+        // v1.44.2: shrunk ~20% again (110dp / 160dp -> 88dp /
+        // 128dp), same as the Trending poster; the 2:3-ish poster
+        // ratio is kept (102x160 -> 80x128).
+        int w = dp(88);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 w, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.setMargins(0, 0, dp(10), 0);
@@ -2577,7 +2631,7 @@ public class MainActivity extends Activity {
         card.setPadding(dp(4), dp(4), dp(4), dp(4));
 
         ImageView poster = new ImageView(this);
-        poster.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(160)));
+        poster.setLayoutParams(new LinearLayout.LayoutParams(w - dp(8), dp(128)));
         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
         poster.setBackgroundColor(Color.parseColor("#23262B"));
         card.addView(poster);
