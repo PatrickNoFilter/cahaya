@@ -219,6 +219,91 @@ public class AddonManager {
                 });
     }
 
+    /** v1.45.2: meta fetch that fills in episode titles the base
+     *  addon leaves as the generic "Episode N" (or blank) from the
+     *  TMDB addon, which often has the real title for episodes
+     *  that only just aired (Sunshine Through the Rain: Cinemeta
+     *  has no title for E16+, TMDB has "The Greatest Distance" /
+     *  "Until We Meet Again"). Only fetches TMDB when a title is
+     *  actually missing, and only for series from a non-TMDB
+     *  addon; a TMDB failure just keeps the base titles. The
+     *  callback runs on the main thread, like meta(). */
+    public void metaWithEpisodeTitles(String baseUrl, String type, String id,
+                                      Callback<MetaDetails> cb) {
+        meta(baseUrl, type, id, new Callback<MetaDetails>() {
+            @Override public void onResult(MetaDetails d) {
+                if (!"series".equals(type) || d == null || d.videos == null
+                        || d.videos.isEmpty() || TMDB_ADDON.equals(baseUrl)
+                        || !needsEpisodeTitles(d)) {
+                    post(cb, d, null);
+                    return;
+                }
+                // Same series id — the TMDB addon accepts the IMDb
+                // id and returns the same video ids.
+                meta(TMDB_ADDON, "series", id, new Callback<MetaDetails>() {
+                    @Override public void onResult(MetaDetails tmdb) {
+                        if (tmdb != null && tmdb.videos != null) {
+                            for (MetaDetails.VideoInfo vi : d.videos) {
+                                if (!isGenericEpisodeTitle(vi)) continue;
+                                MetaDetails.VideoInfo tv = findEpisode(tmdb, vi);
+                                if (tv != null && tv.title != null
+                                        && !tv.title.trim().isEmpty()
+                                        && !isGenericEpisodeTitle(tv)) {
+                                    vi.title = tv.title;
+                                }
+                            }
+                        }
+                        post(cb, d, null);
+                    }
+
+                    @Override public void onError(Exception e) {
+                        post(cb, d, null);
+                    }
+                });
+            }
+
+            @Override public void onError(Exception e) {
+                post(cb, null, e);
+            }
+        });
+    }
+
+    private static boolean needsEpisodeTitles(MetaDetails d) {
+        for (MetaDetails.VideoInfo vi : d.videos) {
+            if (isGenericEpisodeTitle(vi)) return true;
+        }
+        return false;
+    }
+
+    /** True when an episode has no usable title: blank, or the
+     *  generic "Episode N" where N is this episode's number. */
+    public static boolean isGenericEpisodeTitle(MetaDetails.VideoInfo vi) {
+        if (vi == null) return true;
+        String t = vi.title == null ? "" : vi.title.trim();
+        if (t.isEmpty()) return true;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("(?i)^episode\\s*(\\d+)$").matcher(t);
+        if (m.matches()) {
+            try {
+                return Integer.parseInt(m.group(1)) == vi.episode;
+            } catch (Exception ignored) { return true; }
+        }
+        return false;
+    }
+
+    /** Find the same episode (by video id, else season+episode) in
+     *  another meta response. */
+    public static MetaDetails.VideoInfo findEpisode(MetaDetails meta,
+                                                    MetaDetails.VideoInfo vi) {
+        if (meta == null || meta.videos == null) return null;
+        for (MetaDetails.VideoInfo cand : meta.videos) {
+            if (cand.id != null && vi.id != null && cand.id.equals(vi.id)) return cand;
+            if (vi.season > 0 && vi.episode > 0
+                    && cand.season == vi.season && cand.episode == vi.episode) return cand;
+        }
+        return null;
+    }
+
     /**
      * GET {base}/stream/{type}/{videoId}.json -> playable streams.
      * Addons without the resource answer 404 -> empty list (not an error),

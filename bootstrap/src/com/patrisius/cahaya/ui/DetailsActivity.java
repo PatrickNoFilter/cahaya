@@ -116,9 +116,12 @@ public class DetailsActivity extends Activity {
         setContentView(loading);
 
         // v1.3.1: TMDB-addon ids fetch meta from the TMDB addon.
+        // v1.45.2: TMDB-merged episode titles, so the episode list
+        // and the play picker show the real title even when
+        // Cinemeta only has "Episode N".
         String metaAddon = itemId != null && itemId.startsWith("tmdb:")
                 ? AddonManager.TMDB_ADDON : AddonManager.DEFAULT_ADDON;
-        mgr.meta(metaAddon, itemType, itemId,
+        mgr.metaWithEpisodeTitles(metaAddon, itemType, itemId,
                 new AddonManager.Callback<MetaDetails>() {
                     @Override
                     public void onResult(MetaDetails d) {
@@ -241,8 +244,15 @@ public class DetailsActivity extends Activity {
 
     private void playVideo(MetaDetails.VideoInfo vi) {
         final String videoId = vi != null ? vi.id : details.id;
+        // v1.45.0: the stream picker title names the episode, not
+        // "Choose stream" — same unified format as the player's
+        // next-episode title (v1.36.4): "S1E15 - Series - Episode".
+        // For a movie there is no episode, so it is just the title.
         final String title = vi != null
-                ? details.name + " — " + vi.title
+                ? (vi.season > 0 && vi.episode > 0
+                        ? "S" + vi.season + "E" + vi.episode + " - " : "")
+                  + details.name
+                  + (vi.title != null && !vi.title.isEmpty() ? " - " + vi.title : "")
                 : details.name;
 
         // v1.42.0: animated loading dialog (spinner + message) —
@@ -444,7 +454,10 @@ public class DetailsActivity extends Activity {
     private void showStreamPicker(String title, String videoId, List<StreamItem> streams) {
         // v1.5.1: grouped column picker (PlayIMDb / Torrentio /
         // 4khdhub); the pick action is unchanged.
-        StreamPicker.show(this, "Choose stream", streams, s -> {
+        // v1.45.0: the dialog title is the episode title itself
+        // ("S1E15 - Series - Episode"), not "Choose stream" — the
+        // title arrives already built that way from playVideo.
+        StreamPicker.show(this, title, streams, s -> {
             if (s.isTorrent()) {
                 playTorrent(title, videoId, s);
                 return;

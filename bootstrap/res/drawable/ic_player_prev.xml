@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cahaya player icon: previous episode (skip-previous: bar + triangle, 24dp grid, tinted at runtime) — mirror of ic_player_next -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+  <path android:pathData="M5,5 L7.5,5 L7.5,19 L5,19 Z" android:fillColor="#FFFFFFFF"/>
+  <path android:pathData="M19.5,5 L10,12 L19.5,19 Z" android:fillColor="#FFFFFFFF" android:strokeColor="#FFFFFFFF" android:strokeWidth="1.6" android:strokeLineJoin="round"/>
+</vector>

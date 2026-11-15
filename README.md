@@ -10,8 +10,8 @@ Nuvio and CloudStream — with support for community addons and plugins.
 ## Releases
 
 One codebase, one universal APK per build (arm64-v8a + armeabi-v7a,
-TV + phone UI auto-detected). Current release: **1.44.2** (build
-158) — the same build runs on the phone and on the TV box.
+TV + phone UI auto-detected). Current release: **1.45.2** (build
+161) — the same build runs on the phone and on the TV box.
 
 Install: phone — download the APK and tap it (My Files → Internal
 storage → Download). Box — sideload with
@@ -24,6 +24,29 @@ GitHub Releases — builds are distributed by sideload.
 
 ### Changelog
 
+- **1.45.2** — The TMDB episode-title fallback now lives in
+  `AddonManager.metaWithEpisodeTitles` and covers every place an
+  episode title is shown: Details episode list + play picker,
+  player episode list, Next/Previous picker titles, the
+  now-playing flash title, and the History picker (which also
+  rebuilds a stored generic "Episode N" title). Same rule
+  everywhere: only fetches TMDB when a title is actually missing.
+- **1.45.1** — Episode titles that Cinemeta leaves as the generic
+  "Episode N" (or blank) are now filled in from the TMDB addon,
+  which often has the real title for episodes that only just
+  aired (Sunshine Through the Rain E16 "The Greatest Distance"
+  and E17 "Until We Meet Again" — Cinemeta has neither). Applies
+  to the episode list and to the Next/Previous picker titles.
+  Only fetches TMDB when a title is actually missing, so series
+  with complete titles pay no extra call.
+- **1.45.0** — Stream picker titles name the episode
+  ("S1E15 - Sunshine Through the Rain - The Space Between Us")
+  instead of "Choose stream", in all three places that open it
+  (Details Play, Playing History, Player Next — Next already did).
+  Player nav gains two series-only buttons: Previous episode
+  (skip-back icon) and Episode list (three-bars icon, every
+  episode in one dialog, current one marked ▶, tap to find its
+  streams).
 - **1.44.2** — Three Home fixes. The Irama card now sits flush
   at the very bottom edge (the content pane's 28dp bottom
   padding left a strip below it). The 5-minute hide-after-pause

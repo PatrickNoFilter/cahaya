@@ -1046,7 +1046,10 @@ public class MainActivity extends Activity {
             }
             derivedMovieDbId = d;
         }
-        mgr.meta(seriesId != null && seriesId.startsWith("tmdb:")
+        // v1.45.2: TMDB-merged episode titles, so a stored
+        // "Episode N" title can be replaced with the real one
+        // before the picker shows it.
+        mgr.metaWithEpisodeTitles(seriesId != null && seriesId.startsWith("tmdb:")
                         ? AddonManager.TMDB_ADDON : AddonManager.DEFAULT_ADDON,
                 it.type, seriesId,
                 new AddonManager.Callback<com.patrisius.cahaya.addon.MetaDetails>() {
@@ -1061,6 +1064,32 @@ public class MainActivity extends Activity {
                                 try {
                                     year = Integer.parseInt(ym.group());
                                 } catch (Exception ignored) {
+                                }
+                            }
+                        }
+                        // v1.45.2: if the stored history title ends
+                        // in a generic "Episode N", rebuild it with
+                        // the real episode title from the merged
+                        // meta, so the picker shows the real title.
+                        if ("series".equals(it.type) && d != null && d.videos != null
+                                && fSeason > 0 && fEpisode > 0) {
+                            String stored = it.title != null ? it.title.trim() : "";
+                            boolean storedGeneric = stored
+                                    .toLowerCase(java.util.Locale.ROOT)
+                                    .endsWith("episode " + fEpisode);
+                            if (storedGeneric) {
+                                for (com.patrisius.cahaya.addon.MetaDetails.VideoInfo vi
+                                        : d.videos) {
+                                    if (vi.season == fSeason && vi.episode == fEpisode
+                                            && vi.title != null
+                                            && !vi.title.trim().isEmpty()
+                                            && !com.patrisius.cahaya.addon.AddonManager
+                                                    .isGenericEpisodeTitle(vi)) {
+                                        it.title = "S" + fSeason + "E" + fEpisode + " - "
+                                                + (d.name != null ? d.name : "")
+                                                + " - " + vi.title;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -1227,7 +1256,27 @@ public class MainActivity extends Activity {
     private void showHistoryPicker(ContinueWatching.Item it,
                                    List<StreamItem> streams) {
         // v1.5.1: same grouped column picker as Details Play.
-        StreamPicker.show(this, "Choose stream", streams, s -> {
+        // v1.45.0: the dialog title is the episode title itself
+        // ("S1E15 - Series - Episode"), not "Choose stream". The
+        // stored title may already carry the S/E prefix (episodes
+        // resumed after a Next switch do); if not, derive it from
+        // the videoId (seriesId:season:episode) and prepend it.
+        String pickerTitle = it.title != null ? it.title.replace(" — ", " - ") : "Unknown";
+        if ("series".equals(it.type) && it.videoId != null) {
+            String[] parts = it.videoId.split(":");
+            if (parts.length >= 3) {
+                try {
+                    int s = Integer.parseInt(parts[parts.length - 2]);
+                    int e = Integer.parseInt(parts[parts.length - 1]);
+                    String se = "S" + s + "E" + e + " - ";
+                    if (!pickerTitle.startsWith(se)
+                            && !pickerTitle.startsWith("S" + s + "E" + e + " ")) {
+                        pickerTitle = se + pickerTitle;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        StreamPicker.show(this, pickerTitle, streams, s -> {
             if (s.isTorrent()) {
                 playHistoryTorrent(it, s);
                 return;

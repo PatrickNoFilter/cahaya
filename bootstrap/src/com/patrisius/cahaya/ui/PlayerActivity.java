@@ -162,7 +162,7 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     };
     private TextView hintView;
     private FrameLayout controller;
-    private PlayerButton backBtn, playBtn, nextBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn;
+    private PlayerButton backBtn, playBtn, nextBtn, prevBtn, epListBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn;
     private String poster;
     /** v1.1.0 live-save throttle: last wall time / position written to history. */
     private long lastLiveSaveMs = 0;
@@ -599,7 +599,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         playBtn = new PlayerButton(this, 64, 38, R.drawable.ic_player_pause, "Play or pause");
+        prevBtn = new PlayerButton(this, 56, 32, R.drawable.ic_player_prev, "Previous episode");
         nextBtn = new PlayerButton(this, 56, 32, R.drawable.ic_player_next, "Next episode");
+        epListBtn = new PlayerButton(this, 56, 32, R.drawable.ic_player_list, "Episode list");
         rewBtn = new PlayerButton(this, 56, 32, R.drawable.ic_player_replay10, "Back 10 seconds");
         fwdBtn = new PlayerButton(this, 56, 32, R.drawable.ic_player_forward10, "Forward 10 seconds");
         subsBtn = new PlayerButton(this, 56, 30, R.drawable.ic_player_subtitles, "Subtitles");
@@ -607,9 +609,13 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         speedBtn = new PlayerButton(this, 56, 30, R.drawable.ic_player_speed, "Playback speed");
         aspectBtn = new PlayerButton(this, 56, 30, R.drawable.ic_player_aspect, "Aspect ratio");
         playBtn.setId(View.generateViewId());
+        prevBtn.setId(View.generateViewId());
         nextBtn.setId(View.generateViewId());
+        epListBtn.setId(View.generateViewId());
         addGap(row, playBtn, 0);
+        addGap(row, prevBtn, 8);
         addGap(row, nextBtn, 8);
+        addGap(row, epListBtn, 8);
         addGap(row, rewBtn, 8);
         addGap(row, fwdBtn, 8);
         row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
@@ -621,7 +627,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         controller.addView(bottom, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
 
         playBtn.setOnClickListener(v -> { togglePlay(); });
+        prevBtn.setOnClickListener(v -> { openPrevEpisodePicker(); });
         nextBtn.setOnClickListener(v -> { openNextEpisodePicker(); });
+        epListBtn.setOnClickListener(v -> { openEpisodeList(); });
         rewBtn.setOnClickListener(v -> { seekRel(-10); scheduleHide(); });
         fwdBtn.setOnClickListener(v -> { seekRel(10); scheduleHide(); });
         subsBtn.setOnClickListener(v -> openPanel(P_SUBS, v));
@@ -633,10 +641,15 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
         seek.setNextFocusUpId(backBtn.getId());
         seek.setNextFocusDownId(playBtn.getId());
         backBtn.setNextFocusDownId(seek.getId());
-        for (View b : new View[]{playBtn, nextBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn})
+        for (View b : new View[]{playBtn, prevBtn, nextBtn, epListBtn, rewBtn, fwdBtn, subsBtn, audioBtn, speedBtn, aspectBtn})
             b.setNextFocusUpId(seek.getId());
         // v1.1.0: Next only makes sense for series — hide it for movies.
-        if (!"series".equals(type)) nextBtn.setVisibility(View.GONE);
+        // v1.45.0: same for Previous + Episode list.
+        if (!"series".equals(type)) {
+            prevBtn.setVisibility(View.GONE);
+            nextBtn.setVisibility(View.GONE);
+            epListBtn.setVisibility(View.GONE);
+        }
 
         root.addView(controller, new FrameLayout.LayoutParams(-1, -1));
 
@@ -1167,7 +1180,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
             seriesId = sb.toString();
         } catch (Exception e) { return; }
         final AddonManager mgr = ((CahayaApp) getApplication()).addons();
-        mgr.meta(seriesId.startsWith("tmdb:") ? AddonManager.TMDB_ADDON
+        // v1.45.2: TMDB-merged titles, so the flash shows the real
+        // episode title even when Cinemeta only has "Episode N".
+        mgr.metaWithEpisodeTitles(seriesId.startsWith("tmdb:") ? AddonManager.TMDB_ADDON
                 : AddonManager.DEFAULT_ADDON, "series", seriesId,
                 new AddonManager.Callback<MetaDetails>() {
                     @Override public void onResult(MetaDetails meta) {
@@ -1254,8 +1269,18 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
     /** Next button: find the episode after this one in Cinemeta's
      *  video list, gather its streams from every source (same set as
      *  Details), and let the user pick one — nothing auto-plays. */
-    private void openNextEpisodePicker() {
-        if (!"series".equals(type) || videoId == null) { hint("No next episode"); return; }
+    private void openNextEpisodePicker() { openAdjacentEpisodePicker(1); }
+
+    /** v1.45.0: Previous episode — same flow as Next, one step back. */
+    private void openPrevEpisodePicker() { openAdjacentEpisodePicker(-1); }
+
+    /** v1.45.0: the Next/Previous picker shared — delta +1 steps to
+     *  the next episode, -1 to the previous one. */
+    private void openAdjacentEpisodePicker(final int delta) {
+        if (!"series".equals(type) || videoId == null) {
+            hint(delta > 0 ? "No next episode" : "No previous episode");
+            return;
+        }
         // v1.5.0: parse from the right — a tmdb: id ("tmdb:293607:1:2")
         // has one more segment than a tt id ("tt123:1:2"), so the old
         // parts[0]/[1]/[2] split read the wrong season and series.
@@ -1276,11 +1301,14 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
 
         // v1.42.0: animated loading dialog (spinner + message) —
         // the old bare text looked frozen while 65 providers ran.
-        final AlertDialog progress = LoadingDialog.show(this, "Finding next episode…");
+        final AlertDialog progress = LoadingDialog.show(this,
+                delta > 0 ? "Finding next episode…" : "Finding previous episode…");
 
         final AddonManager mgr = ((CahayaApp) getApplication()).addons();
         // v1.5.0: TMDB-sourced series fetch meta from the TMDB addon.
-        mgr.meta(seriesId.startsWith("tmdb:") ? AddonManager.TMDB_ADDON
+        // v1.45.2: TMDB-merged titles, so the picker title is the
+        // real episode title even when Cinemeta only has "Episode N".
+        mgr.metaWithEpisodeTitles(seriesId.startsWith("tmdb:") ? AddonManager.TMDB_ADDON
                 : AddonManager.DEFAULT_ADDON, "series", seriesId,
                 new AddonManager.Callback<MetaDetails>() {
                     @Override public void onResult(MetaDetails meta) {
@@ -1294,14 +1322,94 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                                 break;
                             }
                         }
-                        if (idx < 0 || idx + 1 >= meta.videos.size()) {
+                        if (idx < 0 || idx + delta < 0
+                                || idx + delta >= meta.videos.size()) {
                             main.post(() -> {
                                 progress.dismiss();
-                                hint("This is the last episode");
+                                hint(delta > 0 ? "This is the last episode"
+                                        : "This is the first episode");
                             });
                             return;
                         }
-                        collectNextStreams(meta, meta.videos.get(idx + 1), progress);
+                        collectNextStreams(meta, meta.videos.get(idx + delta), progress);
+                    }
+
+                    @Override public void onError(Exception e) {
+                        main.post(() -> {
+                            progress.dismiss();
+                            Toast.makeText(PlayerActivity.this,
+                                    "Couldn't load series info", Toast.LENGTH_SHORT).show();
+                        });
+                    }
+                });
+    }
+
+    /** v1.45.0: Episode list — every episode of this series in one
+     *  dialog (the one now playing is marked ▶); tapping one finds
+     *  its streams through the same collector the Next/Previous
+     *  buttons use, so the stream picker opens for that episode. */
+    private void openEpisodeList() {
+        if (!"series".equals(type) || videoId == null) { hint("No episode list"); return; }
+        // v1.5.0: parse from the right — a tmdb: id has one more
+        // segment than a tt id, so parts[0]/[1]/[2] reads the wrong
+        // season and series.
+        String[] parts = videoId.split(":");
+        if (parts.length < 3) { hint("No episode list for this title"); return; }
+        final String seriesId;
+        final int curSeason, curEpisode;
+        try {
+            curSeason = Integer.parseInt(parts[parts.length - 2]);
+            curEpisode = Integer.parseInt(parts[parts.length - 1]);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < parts.length - 2; i++) {
+                if (i > 0) sb.append(":");
+                sb.append(parts[i]);
+            }
+            seriesId = sb.toString();
+        } catch (Exception e) { hint("No episode list for this title"); return; }
+
+        final AlertDialog progress = LoadingDialog.show(this, "Loading episodes…");
+        final AddonManager mgr = ((CahayaApp) getApplication()).addons();
+        // v1.45.2: TMDB-merged titles, so the list shows the real
+        // episode title even when Cinemeta only has "Episode N".
+        mgr.metaWithEpisodeTitles(seriesId.startsWith("tmdb:") ? AddonManager.TMDB_ADDON
+                : AddonManager.DEFAULT_ADDON, "series", seriesId,
+                new AddonManager.Callback<MetaDetails>() {
+                    @Override public void onResult(MetaDetails meta) {
+                        if (destroyed) return;
+                        main.post(() -> {
+                            progress.dismiss();
+                            if (meta.videos == null || meta.videos.isEmpty()) {
+                                hint("No episodes found");
+                                return;
+                            }
+                            final java.util.List<String> labels = new java.util.ArrayList<>();
+                            for (MetaDetails.VideoInfo vi : meta.videos) {
+                                String label = (vi.season > 0 && vi.episode > 0
+                                        ? "S" + vi.season + "E" + vi.episode + " - " : "")
+                                        + (vi.title != null && !vi.title.isEmpty()
+                                                ? vi.title : ("Episode " + vi.episode));
+                                if (vi.id.equals(videoId)
+                                        || (vi.season == curSeason && vi.episode == curEpisode)) {
+                                    label = "▶ " + label;
+                                }
+                                labels.add(label);
+                            }
+                            android.widget.ArrayAdapter<String> adapter =
+                                    new android.widget.ArrayAdapter<>(PlayerActivity.this,
+                                            android.R.layout.simple_list_item_1, labels);
+                            new android.app.AlertDialog.Builder(PlayerActivity.this)
+                                    .setTitle(meta.name != null ? meta.name : "Episodes")
+                                    .setAdapter(adapter, (d, which) -> {
+                                        if (destroyed) return;
+                                        MetaDetails.VideoInfo chosen = meta.videos.get(which);
+                                        AlertDialog p2 = LoadingDialog.show(
+                                                PlayerActivity.this, "Finding streams…");
+                                        collectNextStreams(meta, chosen, p2);
+                                    })
+                                    .setNegativeButton("Close", null)
+                                    .show();
+                        });
                     }
 
                     @Override public void onError(Exception e) {
@@ -1870,7 +1978,9 @@ public class PlayerActivity extends Activity implements MPVLib.EventObserver {
                 && panel != null && !panel.isOpen()) {
             View f = getCurrentFocus();
             if (f == playBtn) { togglePlay(); return true; }
+            if (f == prevBtn) { openPrevEpisodePicker(); return true; }
             if (f == nextBtn) { openNextEpisodePicker(); return true; }
+            if (f == epListBtn) { openEpisodeList(); return true; }
             if (f == rewBtn) { seekRel(-10); scheduleHide(); return true; }
             if (f == fwdBtn) { seekRel(10); scheduleHide(); return true; }
             if (f == subsBtn) { openPanel(P_SUBS, subsBtn); return true; }
